@@ -31,6 +31,8 @@ npm run ui
 
 macOS 上也可以直接双击文件夹里的 `启动小红书爬取面板.command`。
 
+Windows 上可以直接双击文件夹里的 `启动小红书爬取面板.cmd`。
+
 首次使用或登录过期时，在面板点击“打开登录”，登录成功并确认能正常访问小红书后，关闭登录浏览器窗口，再点击“开始爬取”。登录状态会保存在本地 `.xhs-profile` 目录里，该目录不会上传到 GitHub。
 
 ### 方式二：命令行
@@ -54,6 +56,28 @@ npm run crawl -- --since 2026-04-15
 结果会输出到 `output/xhs_notes_起始日期_to_结束日期.xls` 和同名 CSV。`.xls` 是 Excel XML 格式，能直接保留公式。
 
 面板启动爬取时默认会弹出浏览器窗口，方便观察实际访问情况；如果想后台运行，可以用 `HEADLESS=1 npm run ui` 启动面板。
+
+### Docker
+
+Docker 里没有桌面窗口，默认使用无头浏览器运行。先在本机完成一次登录，确认 `.xhs-profile` 目录存在并可用，再把它作为 volume 挂进容器。
+
+```bash
+docker compose up --build
+```
+
+然后打开 `http://127.0.0.1:3000`。Docker 环境里“打开登录”不能交互扫码登录；如果登录态过期，需要回到有桌面环境的机器上重新登录，再重启容器。
+
+不使用 compose 时也可以手动运行：
+
+```bash
+docker build -t rednote-harvest .
+docker run --rm -p 3000:3000 \
+  -e HOST=0.0.0.0 \
+  -e HEADLESS=1 \
+  -v "$PWD/output:/app/output" \
+  -v "$PWD/.xhs-profile:/app/.xhs-profile" \
+  rednote-harvest
+```
 
 ## 字段
 
@@ -79,3 +103,9 @@ npm run crawl -- --since 2026-04-15
 - `node_modules/`、`.xhs-profile/`、`output/` 已加入 `.gitignore`，不会提交。
 - 小红书登录态可能过期；如果日志提示登录失效，重新点击“打开登录”即可。
 - 该工具仅用于已登录后页面可见内容的整理导出。
+
+## 跨平台说明
+
+- Windows 没有 `lsof`，脚本会跳过本地 profile 占用检测；如果浏览器还开着，Playwright 会给出明确启动错误。
+- Docker/Linux 无显示器环境会自动切到无头模式，并给 Chromium 添加 `--no-sandbox` 和 `--disable-dev-shm-usage`。
+- Docker 访问面板时服务监听 `0.0.0.0`，本机访问仍然使用 `http://127.0.0.1:3000`。

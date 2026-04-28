@@ -1,0 +1,9 @@
+.git
+.DS_Store
+node_modules/
+.xhs-profile/
+output/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

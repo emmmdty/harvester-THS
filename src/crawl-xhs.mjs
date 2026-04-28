@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
+import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
 
 const ROOT = process.cwd();
 const OUTPUT_DIR = path.join(ROOT, "output");
@@ -12,7 +13,7 @@ const MAX_SCROLLS_PER_ACCOUNT = Number(process.env.MAX_SCROLLS_PER_ACCOUNT || 18
 const MAX_DETAIL_PAGES = Number(process.env.MAX_DETAIL_PAGES || 120);
 const OLD_NOTE_STOP_AFTER = Number(process.env.OLD_NOTE_STOP_AFTER || 4);
 const MIN_CHECK_BEFORE_STOP = Number(process.env.MIN_CHECK_BEFORE_STOP || 8);
-const HEADLESS = process.env.HEADLESS === "1";
+const HEADLESS = resolveHeadless();
 
 const DEFAULT_ACCOUNTS = [
   { name: "同花顺投资", url: "" },
@@ -38,6 +39,7 @@ async function main() {
 
   const accounts = await loadAccounts();
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+    ...chromiumLaunchOptions(),
     headless: HEADLESS,
     viewport: { width: 1440, height: 1000 },
     locale: "zh-CN",

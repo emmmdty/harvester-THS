@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "login": "playwright open --user-data-dir=.xhs-profile https://www.xiaohongshu.com",
+    "login": "node src/login-xhs.mjs",
     "crawl": "node src/crawl-xhs.mjs",
     "ui": "node src/server.mjs"
   },

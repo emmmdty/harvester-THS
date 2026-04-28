@@ -1,16 +1,19 @@
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { isDocker } from "./browser-env.mjs";
 
 const ROOT = process.cwd();
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || "127.0.0.1";
+const HOST = process.env.HOST || (isDocker() ? "0.0.0.0" : "127.0.0.1");
+const DISPLAY_HOST = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const OUTPUT_DIR = path.join(ROOT, "output");
 const PROFILE_DIR = path.join(ROOT, ".xhs-profile");
-const XHS_URL = "https://www.xiaohongshu.com";
+const NODE_BIN = process.execPath;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,7 +75,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`小红书爬取面板已启动：http://${HOST}:${PORT}`);
+  console.log(`小红书爬取面板已启动：http://${DISPLAY_HOST}:${PORT}`);
 });
 
 async function startLogin(res) {
@@ -89,11 +92,8 @@ async function startLogin(res) {
   }
 
   appendLog("打开小红书登录浏览器...");
-  loginProcess = spawn("npx", [
-    "playwright",
-    "open",
-    `--user-data-dir=${PROFILE_DIR}`,
-    XHS_URL
+  loginProcess = spawn(NODE_BIN, [
+    path.join(__dirname, "login-xhs.mjs")
   ], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"]
@@ -101,6 +101,11 @@ async function startLogin(res) {
 
   loginProcess.stdout.on("data", (chunk) => appendLog(chunk.toString()));
   loginProcess.stderr.on("data", (chunk) => appendLog(chunk.toString()));
+  loginProcess.on("error", (error) => {
+    appendLog(`登录浏览器启动失败：${error.message || String(error)}`);
+    loginProcess = null;
+    broadcastStatus();
+  });
   loginProcess.on("close", (code) => {
     appendLog(`登录浏览器已关闭，退出码：${code}`);
     loginProcess = null;
@@ -140,18 +145,23 @@ async function startCrawl(res, body) {
   logs = [];
   appendLog(`启动爬取任务，起始日期：${since}`);
 
-  currentRun = spawn("node", [
+  currentRun = spawn(NODE_BIN, [
     path.join(__dirname, "crawl-xhs.mjs"),
     "--since",
     since
   ], {
     cwd: ROOT,
-    env: { ...process.env, FORCE_COLOR: "0", HEADLESS: process.env.HEADLESS || "0" },
+    env: { ...process.env, FORCE_COLOR: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
 
   currentRun.stdout.on("data", (chunk) => appendLog(chunk.toString()));
   currentRun.stderr.on("data", (chunk) => appendLog(chunk.toString()));
+  currentRun.on("error", (error) => {
+    appendLog(`爬取任务启动失败：${error.message || String(error)}`);
+    currentRun = null;
+    broadcastStatus();
+  });
   currentRun.on("close", async (code) => {
     appendLog(`任务结束，退出码：${code}`);
     currentRun = null;
@@ -229,13 +239,17 @@ async function ensureProfileReady() {
 }
 
 function isProfileInUse() {
+  if (process.platform === "win32") return false;
+  if (!existsSync(PROFILE_DIR)) return false;
+
   const result = spawnSync("lsof", ["+D", PROFILE_DIR], {
     cwd: ROOT,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   });
 
-  return result.status === 0 && result.stdout.trim().length > 0;
+  if (result.error) return false;
+  return result.status === 0 && String(result.stdout || "").trim().length > 0;
 }
 
 function broadcastStatus() {
