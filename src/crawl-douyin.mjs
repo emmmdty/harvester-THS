@@ -138,6 +138,9 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
 
       if (!detail.publishedAt) {
         console.warn(`未识别抖音发布时间：${detail.itemUrl || link.exportUrl}`);
+        if (detail.dateCandidates) {
+          console.warn(`时间候选文本：${detail.dateCandidates}`);
+        }
         continue;
       }
 
@@ -208,7 +211,7 @@ async function getPublishedItems(page) {
 
 async function scrapeItemDetail(page, itemUrl) {
   await page.goto(itemUrl, { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2500);
+  await waitForDetailDateText(page);
   const detail = await scrapeItemDetailFromPage(page);
   detail.itemUrl = normalizeClickedItemUrl(page.url()) || itemUrl;
   return detail;
@@ -222,7 +225,18 @@ async function scrapeItemDetailFromPage(page) {
 
   const tags = extractTags(bodyText);
   const publishedAt = extractPublishedAtFromText(bodyText);
-  return { tags, publishedAt };
+  return { tags, publishedAt, dateCandidates: extractDateCandidateLines(bodyText) };
+}
+
+async function waitForDetailDateText(page) {
+  await page.waitForFunction(() => {
+    const text = document.body?.innerText || "";
+    return /发布时间[:：]?\s*20\d{2}[./-]\d{1,2}[./-]\d{1,2}/.test(text)
+      || /发布于[:：]?\s*20\d{2}[./-]\d{1,2}[./-]\d{1,2}/.test(text)
+      || /\d{4}年\d{1,2}月\d{1,2}日/.test(text)
+      || /(刚刚|\d+\s*分钟前|\d+\s*小时前|昨天|今天)/.test(text);
+  }, { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(600);
 }
 
 async function isLoginRequired(page) {
@@ -258,6 +272,20 @@ function extractPublishedAtFromText(text) {
   }
 
   return parsePublishedAt(normalized);
+}
+
+function extractDateCandidateLines(text) {
+  const lines = String(text || "")
+    .replace(/\u00a0/g, " ")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      if (line.length > 100) return false;
+      return /发布|时间|刚刚|分钟前|小时前|天前|周前|昨天|今天|\d{4}[./年-]|\d{1,2}[./月-]\d{1,2}/.test(line);
+    });
+
+  return lines.slice(0, 8).join(" | ");
 }
 
 function extractTags(text) {
