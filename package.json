@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "login": "node src/login-xhs.mjs",
+    "login:douyin": "node src/login-douyin.mjs",
     "crawl": "node src/crawl-xhs.mjs",
+    "crawl:douyin": "node src/crawl-douyin.mjs",
     "ui": "node src/server.mjs"
   },
   "dependencies": {

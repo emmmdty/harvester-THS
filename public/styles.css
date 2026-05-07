@@ -175,6 +175,32 @@ button:disabled {
   border-color: var(--line);
 }
 
+.platform-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  margin-bottom: 14px;
+}
+
+.platform-tab {
+  min-width: 96px;
+  height: 36px;
+  padding: 0 14px;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.platform-tab.active {
+  color: white;
+  background: var(--accent);
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.55fr);
@@ -265,6 +291,10 @@ button:disabled {
   .toolbar,
   .workspace {
     grid-template-columns: 1fr;
+  }
+
+  .platform-tabs {
+    width: 100%;
   }
 
   .toolbar {

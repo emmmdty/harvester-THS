@@ -3,17 +3,22 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>小红书爬取面板</title>
+    <title>作品采集面板</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <main class="app">
       <section class="topbar">
         <div>
-          <p class="eyebrow">Xiaohongshu Crawler</p>
-          <h1>小红书作品采集</h1>
+          <p class="eyebrow" id="eyebrow">Xiaohongshu Crawler</p>
+          <h1 id="title">小红书作品采集</h1>
         </div>
         <div class="status" id="status">待命</div>
+      </section>
+
+      <section class="platform-tabs" aria-label="平台切换">
+        <button id="platform-xhs" type="button" class="platform-tab active" data-platform="xhs">小红书</button>
+        <button id="platform-douyin" type="button" class="platform-tab" data-platform="douyin">抖音</button>
       </section>
 
       <section class="toolbar" aria-label="爬取控制">

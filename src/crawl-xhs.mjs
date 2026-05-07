@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { classifyTags } from "./tag-rules.mjs";
 
 const ROOT = process.cwd();
 const OUTPUT_DIR = path.join(ROOT, "output");
@@ -22,17 +23,6 @@ const DEFAULT_ACCOUNTS = [
   { name: "同花顺新手福利官", url: "" },
   { name: "同花顺理财", url: "" },
   { name: "喵懂投资", url: "" }
-];
-
-const TYPE_RULES = [
-  { tag: "#同花顺资讯", type: "资讯" },
-  { tag: "#同花顺股友说", type: "股友说" },
-  { tag: "#同顺图解", type: "图文" },
-  { tag: "#同顺盘点", type: "盘点" },
-  { tag: "#问财问句", type: "问财" },
-  { tag: "#同顺深度财经", type: "长视频" },
-  { tag: "#同顺财商", type: "财商动画" },
-  { tag: "#同花顺股民话题", type: "社区话题" }
 ];
 
 async function main() {
@@ -205,7 +195,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
         publishedAt,
         noteUrl: detail.noteUrl || link.exportUrl,
         tags: detail.tags,
-        contentType: classify(detail.tags)
+        contentType: classifyTags(detail.tags)
       });
       console.log(`命中：${accountName} ${publishedAt} ${detail.noteUrl || link.exportUrl}`);
     }
@@ -345,14 +335,6 @@ function extractPublishedAtFromDetailText(text) {
 function extractTags(text) {
   const matches = text.match(/#[\p{Script=Han}\p{Letter}\p{Number}_-]+/gu) || [];
   return [...new Set(matches)].join(" ");
-}
-
-function classify(tags) {
-  const tagSet = new Set(String(tags || "").split(/\s+/).filter(Boolean));
-  for (const rule of TYPE_RULES) {
-    if (tagSet.has(rule.tag)) return rule.type;
-  }
-  return "无";
 }
 
 function parsePublishedAt(text) {

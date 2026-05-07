@@ -12,15 +12,33 @@ const HOST = process.env.HOST || (isDocker() ? "0.0.0.0" : "127.0.0.1");
 const DISPLAY_HOST = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const OUTPUT_DIR = path.join(ROOT, "output");
-const PROFILE_DIR = path.join(ROOT, ".xhs-profile");
 const NODE_BIN = process.execPath;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const PLATFORMS = {
+  xhs: {
+    id: "xhs",
+    label: "小红书",
+    profileDir: path.join(ROOT, ".xhs-profile"),
+    loginScript: path.join(__dirname, "login-xhs.mjs"),
+    crawlScript: path.join(__dirname, "crawl-xhs.mjs"),
+    outputPrefix: "xhs_notes_"
+  },
+  douyin: {
+    id: "douyin",
+    label: "抖音",
+    profileDir: path.join(ROOT, ".douyin-profile"),
+    loginScript: path.join(__dirname, "login-douyin.mjs"),
+    crawlScript: path.join(__dirname, "crawl-douyin.mjs"),
+    outputPrefix: "douyin_notes_"
+  }
+};
+
 let currentRun = null;
 let loginProcess = null;
-let logs = [];
+const logsByPlatform = new Map(Object.keys(PLATFORMS).map((id) => [id, []]));
 const clients = new Set();
 
 const server = http.createServer(async (req, res) => {
@@ -33,27 +51,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/status") {
-      sendJson(res, {
-        running: Boolean(currentRun),
-        loginRunning: Boolean(loginProcess),
-        logs
-      });
+      const platform = getPlatform(url.searchParams.get("platform"));
+      sendJson(res, statusPayload(platform.id));
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/outputs") {
-      sendJson(res, { files: await listOutputs() });
+      const platform = getPlatform(url.searchParams.get("platform"));
+      sendJson(res, { files: await listOutputs(platform.id) });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/login") {
-      await startLogin(res);
+      const body = await readJson(req);
+      await startLogin(res, getPlatform(body?.platform));
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/crawl") {
       const body = await readJson(req);
-      await startCrawl(res, body);
+      await startCrawl(res, getPlatform(body?.platform), body);
       return;
     }
 
@@ -75,39 +92,38 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`小红书爬取面板已启动：http://${DISPLAY_HOST}:${PORT}`);
+  console.log(`作品采集面板已启动：http://${DISPLAY_HOST}:${PORT}`);
 });
 
-async function startLogin(res) {
+async function startLogin(res, platform) {
   if (loginProcess) {
-    sendJson(res, { ok: true, message: "登录浏览器已经打开" });
+    sendJson(res, { ok: true, message: `${loginProcess.platform.label}登录浏览器已经打开` });
     return;
   }
 
-  const profileReady = await ensureProfileReady();
+  const profileReady = await ensureProfileReady(platform);
   if (!profileReady.ok) {
-    appendLog(profileReady.message);
+    appendLog(platform.id, profileReady.message);
     sendJson(res, { error: profileReady.message }, 409);
     return;
   }
 
-  appendLog("打开小红书登录浏览器...");
-  loginProcess = spawn(NODE_BIN, [
-    path.join(__dirname, "login-xhs.mjs")
-  ], {
+  appendLog(platform.id, `打开${platform.label}登录浏览器...`);
+  loginProcess = spawn(NODE_BIN, [platform.loginScript], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"]
   });
+  loginProcess.platform = platform;
 
-  loginProcess.stdout.on("data", (chunk) => appendLog(chunk.toString()));
-  loginProcess.stderr.on("data", (chunk) => appendLog(chunk.toString()));
+  loginProcess.stdout.on("data", (chunk) => appendLog(platform.id, chunk.toString()));
+  loginProcess.stderr.on("data", (chunk) => appendLog(platform.id, chunk.toString()));
   loginProcess.on("error", (error) => {
-    appendLog(`登录浏览器启动失败：${error.message || String(error)}`);
+    appendLog(platform.id, `${platform.label}登录浏览器启动失败：${error.message || String(error)}`);
     loginProcess = null;
     broadcastStatus();
   });
   loginProcess.on("close", (code) => {
-    appendLog(`登录浏览器已关闭，退出码：${code}`);
+    appendLog(platform.id, `${platform.label}登录浏览器已关闭，退出码：${code}`);
     loginProcess = null;
     broadcastStatus();
   });
@@ -116,22 +132,22 @@ async function startLogin(res) {
   broadcastStatus();
 }
 
-async function startCrawl(res, body) {
+async function startCrawl(res, platform, body) {
   if (currentRun) {
-    sendJson(res, { error: "已有爬取任务正在运行" }, 409);
+    sendJson(res, { error: `${currentRun.platform.label}爬取任务正在运行` }, 409);
     return;
   }
 
   if (loginProcess) {
-    const message = "请先关闭登录浏览器窗口，再开始爬取。登录状态会保留，不需要重新登录。";
-    appendLog(message);
+    const message = `请先关闭${loginProcess.platform.label}登录浏览器窗口，再开始爬取。登录状态会保留，不需要重新登录。`;
+    appendLog(platform.id, message);
     sendJson(res, { error: message }, 409);
     return;
   }
 
-  const profileReady = await ensureProfileReady();
+  const profileReady = await ensureProfileReady(platform);
   if (!profileReady.ok) {
-    appendLog(profileReady.message);
+    appendLog(platform.id, profileReady.message);
     sendJson(res, { error: profileReady.message }, 409);
     return;
   }
@@ -142,11 +158,11 @@ async function startCrawl(res, body) {
     return;
   }
 
-  logs = [];
-  appendLog(`启动爬取任务，起始日期：${since}`);
+  logsByPlatform.set(platform.id, []);
+  appendLog(platform.id, `启动${platform.label}爬取任务，起始日期：${since}`);
 
   currentRun = spawn(NODE_BIN, [
-    path.join(__dirname, "crawl-xhs.mjs"),
+    platform.crawlScript,
     "--since",
     since
   ], {
@@ -154,19 +170,20 @@ async function startCrawl(res, body) {
     env: { ...process.env, FORCE_COLOR: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  currentRun.platform = platform;
 
-  currentRun.stdout.on("data", (chunk) => appendLog(chunk.toString()));
-  currentRun.stderr.on("data", (chunk) => appendLog(chunk.toString()));
+  currentRun.stdout.on("data", (chunk) => appendLog(platform.id, chunk.toString()));
+  currentRun.stderr.on("data", (chunk) => appendLog(platform.id, chunk.toString()));
   currentRun.on("error", (error) => {
-    appendLog(`爬取任务启动失败：${error.message || String(error)}`);
+    appendLog(platform.id, `${platform.label}爬取任务启动失败：${error.message || String(error)}`);
     currentRun = null;
     broadcastStatus();
   });
   currentRun.on("close", async (code) => {
-    appendLog(`任务结束，退出码：${code}`);
+    appendLog(platform.id, `${platform.label}任务结束，退出码：${code}`);
     currentRun = null;
     broadcastStatus();
-    broadcast({ type: "outputs", files: await listOutputs() });
+    broadcast({ type: "outputs", platform: platform.id, files: await listOutputs(platform.id) });
   });
 
   sendJson(res, { ok: true });
@@ -179,7 +196,7 @@ function stopCrawl(res) {
     return;
   }
 
-  appendLog("正在停止爬取任务...");
+  appendLog(currentRun.platform.id, `正在停止${currentRun.platform.label}爬取任务...`);
   currentRun.kill("SIGTERM");
   sendJson(res, { ok: true });
 }
@@ -190,39 +207,41 @@ function handleEvents(req, res) {
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive"
   });
-  res.write(`data: ${JSON.stringify({ type: "status", running: Boolean(currentRun), loginRunning: Boolean(loginProcess), logs })}\n\n`);
+  res.write(`data: ${JSON.stringify({ type: "status", ...statusPayload("xhs") })}\n\n`);
   clients.add(res);
   req.on("close", () => clients.delete(res));
 }
 
-function appendLog(text) {
+function appendLog(platformId, text) {
   const parts = String(text)
     .replace(/\u001b\[[0-9;]*m/g, "")
     .replace(/\r/g, "")
     .split("\n")
     .filter(Boolean);
 
+  const logs = logsByPlatform.get(platformId) || [];
   for (const part of parts) {
     logs.push(part);
-    if (logs.length > 600) logs = logs.slice(-600);
-    broadcast({ type: "log", line: part });
+    if (logs.length > 600) logs.splice(0, logs.length - 600);
+    broadcast({ type: "log", platform: platformId, line: part });
   }
+  logsByPlatform.set(platformId, logs);
 }
 
-async function ensureProfileReady() {
-  await fs.mkdir(PROFILE_DIR, { recursive: true });
+async function ensureProfileReady(platform) {
+  await fs.mkdir(platform.profileDir, { recursive: true });
 
-  if (isProfileInUse()) {
+  if (isProfileInUse(platform.profileDir)) {
     return {
       ok: false,
-      message: "小红书登录浏览器还在运行，请先关闭它，再继续操作。"
+      message: `${platform.label}登录浏览器还在运行，请先关闭它，再继续操作。`
     };
   }
 
   const lockFiles = ["SingletonLock", "SingletonCookie", "SingletonSocket"];
   let removed = 0;
   for (const filename of lockFiles) {
-    const lockPath = path.join(PROFILE_DIR, filename);
+    const lockPath = path.join(platform.profileDir, filename);
     try {
       await fs.rm(lockPath, { force: true, recursive: true });
       removed += 1;
@@ -231,18 +250,15 @@ async function ensureProfileReady() {
     }
   }
 
-  if (removed > 0) {
-    appendLog("已清理上次异常退出留下的浏览器锁。");
-  }
-
+  if (removed > 0) appendLog(platform.id, `已清理${platform.label}上次异常退出留下的浏览器锁。`);
   return { ok: true };
 }
 
-function isProfileInUse() {
+function isProfileInUse(profileDir) {
   if (process.platform === "win32") return false;
-  if (!existsSync(PROFILE_DIR)) return false;
+  if (!existsSync(profileDir)) return false;
 
-  const result = spawnSync("lsof", ["+D", PROFILE_DIR], {
+  const result = spawnSync("lsof", ["+D", profileDir], {
     cwd: ROOT,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
@@ -252,28 +268,40 @@ function isProfileInUse() {
   return result.status === 0 && String(result.stdout || "").trim().length > 0;
 }
 
+function statusPayload(platformId) {
+  return {
+    platform: platformId,
+    running: Boolean(currentRun),
+    runningPlatform: currentRun?.platform.id || "",
+    loginRunning: Boolean(loginProcess),
+    loginPlatform: loginProcess?.platform.id || "",
+    logs: logsByPlatform.get(platformId) || []
+  };
+}
+
 function broadcastStatus() {
   broadcast({
     type: "status",
     running: Boolean(currentRun),
+    runningPlatform: currentRun?.platform.id || "",
     loginRunning: Boolean(loginProcess),
-    logs
+    loginPlatform: loginProcess?.platform.id || ""
   });
 }
 
 function broadcast(payload) {
   const data = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const client of clients) {
-    client.write(data);
-  }
+  for (const client of clients) client.write(data);
 }
 
-async function listOutputs() {
+async function listOutputs(platformId = "xhs") {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
+  const platform = getPlatform(platformId);
   const entries = await fs.readdir(OUTPUT_DIR, { withFileTypes: true });
   const files = await Promise.all(entries
     .filter((entry) => entry.isFile())
     .filter((entry) => /\.(csv|xls)$/i.test(entry.name))
+    .filter((entry) => entry.name.startsWith(platform.outputPrefix))
     .map(async (entry) => {
       const filePath = path.join(OUTPUT_DIR, entry.name);
       const stat = await fs.stat(filePath);
@@ -332,6 +360,10 @@ async function readJson(req) {
   for await (const chunk of req) chunks.push(chunk);
   if (!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function getPlatform(value) {
+  return PLATFORMS[value] || PLATFORMS.xhs;
 }
 
 function sendJson(res, payload, status = 200) {

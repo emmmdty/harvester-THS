@@ -10,3 +10,4 @@ services:
     volumes:
       - ./output:/app/output
       - ./.xhs-profile:/app/.xhs-profile
+      - ./.douyin-profile:/app/.douyin-profile

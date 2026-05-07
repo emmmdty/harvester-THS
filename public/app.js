@@ -1,3 +1,16 @@
+const PLATFORMS = {
+  xhs: {
+    eyebrow: "Xiaohongshu Crawler",
+    title: "小红书作品采集",
+    loginText: "打开小红书登录"
+  },
+  douyin: {
+    eyebrow: "Douyin Crawler",
+    title: "抖音作品采集",
+    loginText: "打开抖音登录"
+  }
+};
+
 const sinceInput = document.querySelector("#since");
 const loginButton = document.querySelector("#login");
 const runButton = document.querySelector("#run");
@@ -7,11 +20,30 @@ const refreshButton = document.querySelector("#refresh");
 const logsEl = document.querySelector("#logs");
 const outputsEl = document.querySelector("#outputs");
 const statusEl = document.querySelector("#status");
+const eyebrowEl = document.querySelector("#eyebrow");
+const titleEl = document.querySelector("#title");
+const platformButtons = [...document.querySelectorAll(".platform-tab")];
 
+let currentPlatform = "xhs";
 let logs = [];
+let runState = {
+  running: false,
+  runningPlatform: "",
+  loginRunning: false,
+  loginPlatform: ""
+};
+
+platformButtons.forEach((button) => {
+  button.addEventListener("click", async () => {
+    currentPlatform = button.dataset.platform;
+    renderPlatform();
+    await loadStatus();
+    await loadOutputs();
+  });
+});
 
 loginButton.addEventListener("click", async () => {
-  await postJson("/api/login", {});
+  await postJson("/api/login", { platform: currentPlatform });
 });
 
 runButton.addEventListener("click", async () => {
@@ -22,7 +54,7 @@ runButton.addEventListener("click", async () => {
     return;
   }
 
-  const result = await postJson("/api/crawl", { since });
+  const result = await postJson("/api/crawl", { platform: currentPlatform, since });
   if (result?.error) appendLocalLog(result.error);
 });
 
@@ -42,6 +74,7 @@ events.onmessage = (event) => {
   const payload = JSON.parse(event.data);
 
   if (payload.type === "log") {
+    if (payload.platform !== currentPlatform) return;
     logs.push(payload.line);
     logs = logs.slice(-600);
     renderLogs();
@@ -49,29 +82,41 @@ events.onmessage = (event) => {
   }
 
   if (payload.type === "status") {
-    logs = payload.logs || logs;
-    renderLogs();
-    setRunning(Boolean(payload.running), Boolean(payload.loginRunning));
+    runState = {
+      running: Boolean(payload.running),
+      runningPlatform: payload.runningPlatform || "",
+      loginRunning: Boolean(payload.loginRunning),
+      loginPlatform: payload.loginPlatform || ""
+    };
+    setRunning();
     return;
   }
 
   if (payload.type === "outputs") {
+    if (payload.platform !== currentPlatform) return;
     renderOutputs(payload.files || []);
   }
 };
 
+renderPlatform();
 await loadStatus();
 await loadOutputs();
 
 async function loadStatus() {
-  const status = await fetchJson("/api/status");
+  const status = await fetchJson(`/api/status?platform=${encodeURIComponent(currentPlatform)}`);
   logs = status.logs || [];
+  runState = {
+    running: Boolean(status.running),
+    runningPlatform: status.runningPlatform || "",
+    loginRunning: Boolean(status.loginRunning),
+    loginPlatform: status.loginPlatform || ""
+  };
   renderLogs();
-  setRunning(Boolean(status.running), Boolean(status.loginRunning));
+  setRunning();
 }
 
 async function loadOutputs() {
-  const data = await fetchJson("/api/outputs");
+  const data = await fetchJson(`/api/outputs?platform=${encodeURIComponent(currentPlatform)}`);
   renderOutputs(data.files || []);
 }
 
@@ -96,12 +141,36 @@ async function fetchJson(url) {
   return response.json();
 }
 
-function setRunning(running, loginRunning) {
-  runButton.disabled = running || loginRunning;
-  stopButton.disabled = !running;
-  loginButton.disabled = loginRunning;
-  statusEl.classList.toggle("running", running || loginRunning);
-  statusEl.textContent = running ? "爬取中" : loginRunning ? "登录中" : "待命";
+function renderPlatform() {
+  const config = PLATFORMS[currentPlatform];
+  eyebrowEl.textContent = config.eyebrow;
+  titleEl.textContent = config.title;
+  loginButton.textContent = config.loginText;
+  platformButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.platform === currentPlatform);
+  });
+  setRunning();
+}
+
+function setRunning() {
+  const runningThisPlatform = runState.running && runState.runningPlatform === currentPlatform;
+  const loginThisPlatform = runState.loginRunning && runState.loginPlatform === currentPlatform;
+  const busyOtherPlatform = (runState.running && !runningThisPlatform) || (runState.loginRunning && !loginThisPlatform);
+
+  runButton.disabled = runState.running || runState.loginRunning;
+  stopButton.disabled = !runState.running;
+  loginButton.disabled = runState.loginRunning || runState.running;
+  statusEl.classList.toggle("running", runState.running || runState.loginRunning);
+
+  if (runningThisPlatform) {
+    statusEl.textContent = "爬取中";
+  } else if (loginThisPlatform) {
+    statusEl.textContent = "登录中";
+  } else if (busyOtherPlatform) {
+    statusEl.textContent = "其他平台运行中";
+  } else {
+    statusEl.textContent = "待命";
+  }
 }
 
 function appendLocalLog(line) {
