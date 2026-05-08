@@ -223,9 +223,13 @@ async function scrapeItemDetailFromPage(page) {
     throw new Error("抖音详情页需要重新登录。");
   }
 
-  const tags = extractTags(bodyText);
-  const publishedAt = extractPublishedAtFromText(bodyText);
-  return { tags, publishedAt, dateCandidates: extractDateCandidateLines(bodyText) };
+  const itemText = await readCurrentItemText(page);
+  const titleText = await page.title().catch(() => "");
+  const tagSourceText = itemText || titleText || bodyText;
+  const dateSourceText = itemText || bodyText;
+  const tags = extractTags(tagSourceText);
+  const publishedAt = extractPublishedAtFromText(dateSourceText);
+  return { tags, publishedAt, dateCandidates: extractDateCandidateLines(dateSourceText) };
 }
 
 async function waitForDetailDateText(page) {
@@ -237,6 +241,34 @@ async function waitForDetailDateText(page) {
       || /(刚刚|\d+\s*分钟前|\d+\s*小时前|昨天|今天)/.test(text);
   }, { timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(600);
+}
+
+async function readCurrentItemText(page) {
+  const selectors = [
+    ".video-info-detail",
+    ".xgplayer-video-info-wrap",
+    ".douyin-player-video-info-wrap",
+    ".player-position-box-bottom",
+    ".title"
+  ];
+
+  for (const selector of selectors) {
+    const texts = await page.locator(selector).evaluateAll((elements) => {
+      return elements
+        .map((element) => element.innerText || element.textContent || "")
+        .map((text) => text.trim())
+        .filter(Boolean);
+    }).catch(() => []);
+
+    const usable = texts.find((text) => {
+      if (text.length > 2000) return false;
+      return /#|发布|刚刚|分钟前|小时前|昨天|今天|\d{1,2}月\d{1,2}日|20\d{2}[./-]\d{1,2}[./-]\d{1,2}/.test(text);
+    });
+
+    if (usable) return usable;
+  }
+
+  return "";
 }
 
 async function isLoginRequired(page) {
@@ -301,6 +333,9 @@ function parsePublishedAt(text) {
 
   const cnDate = normalized.match(/(20\d{2})年(\d{1,2})月(\d{1,2})日/);
   if (cnDate) return parseDateOnly(`${cnDate[1]}-${pad(cnDate[2])}-${pad(cnDate[3])}`);
+
+  const cnMonthDate = normalized.match(/(\d{1,2})月(\d{1,2})日/);
+  if (cnMonthDate) return parseDateOnly(`${TODAY.getFullYear()}-${pad(cnMonthDate[1])}-${pad(cnMonthDate[2])}`);
 
   const monthDate = normalized.match(/(?:发布时间|发布于)?[:：]?\s*(\d{1,2})[./-](\d{1,2})(?:\s+\d{1,2}:?\d{0,2})?(?:\s|$)/);
   if (monthDate) return parseDateOnly(`${TODAY.getFullYear()}-${pad(monthDate[1])}-${pad(monthDate[2])}`);
@@ -397,6 +432,7 @@ function normalizeItemUrl(rawUrl) {
   const modalId = url.searchParams.get("modal_id");
   const id = pathMatch?.[1] || modalId;
   if (!id) return null;
+  if (modalId && !/^\/user\//.test(url.pathname)) return null;
   if (!/^\d{8,}$/.test(id) && !/^[A-Za-z0-9_-]{12,}$/.test(id)) return null;
 
   const cleanUrl = pathMatch
