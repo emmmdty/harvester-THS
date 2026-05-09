@@ -14,6 +14,9 @@ const MAX_SCROLLS_PER_ACCOUNT = Number(process.env.MAX_SCROLLS_PER_ACCOUNT || 18
 const MAX_DETAIL_PAGES = Number(process.env.MAX_DETAIL_PAGES || 120);
 const OLD_NOTE_STOP_AFTER = Number(process.env.OLD_NOTE_STOP_AFTER || 4);
 const MIN_CHECK_BEFORE_STOP = Number(process.env.MIN_CHECK_BEFORE_STOP || 8);
+const DETAIL_READ_DELAY = parseDelayRange(process.env.XHS_DETAIL_READ_DELAY || "2000-5000");
+const DETAIL_GAP_DELAY = parseDelayRange(process.env.XHS_DETAIL_GAP_DELAY || "1500-4000");
+const SCROLL_DELAY = parseDelayRange(process.env.XHS_SCROLL_DELAY || "1800-3500");
 const HEADLESS = resolveHeadless();
 
 const DEFAULT_ACCOUNTS = [
@@ -160,6 +163,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
       seen.add(link.id);
       checked += 1;
 
+      await waitRandom(detailPage, DETAIL_GAP_DELAY, "详情页间隔");
       const detail = await scrapeNoteDetail(detailPage, link.detailUrl).catch((error) => {
         console.warn(`打开笔记失败，跳过：${link.exportUrl}`);
         console.warn(error.message || String(error));
@@ -203,7 +207,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
     if (stableRounds >= 4 && stateLinks.length > 0) break;
 
     await listPage.mouse.wheel(0, 1400);
-    await listPage.waitForTimeout(1400);
+    await waitRandom(listPage, SCROLL_DELAY, "下翻停留");
   }
 
   return rows;
@@ -273,7 +277,7 @@ async function getPublishedNotesFromState(page) {
 
 async function scrapeNoteDetail(page, noteUrl) {
   await page.goto(noteUrl, { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(1800);
+  await waitRandom(page, DETAIL_READ_DELAY, "详情页停留");
   const detail = await scrapeNoteDetailFromPage(page);
   detail.noteUrl = normalizeClickedNoteUrl(page.url()) || noteUrl;
   return detail;
@@ -594,6 +598,31 @@ function formatDate(date) {
 
 function pad(value) {
   return String(value).padStart(2, "0");
+}
+
+function parseDelayRange(value) {
+  const text = String(value || "").trim();
+  const range = text.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (range) {
+    const min = Math.max(0, Number(range[1]));
+    const max = Math.max(min, Number(range[2]));
+    return { min, max };
+  }
+
+  const fixed = Math.max(0, Number(text) || 0);
+  return { min: fixed, max: fixed };
+}
+
+async function waitRandom(page, range, label = "停留") {
+  const duration = randomBetween(range.min, range.max);
+  if (duration <= 0) return;
+  console.log(`${label}：${(duration / 1000).toFixed(1)} 秒`);
+  await page.waitForTimeout(duration);
+}
+
+function randomBetween(min, max) {
+  if (max <= min) return min;
+  return Math.floor(min + Math.random() * (max - min + 1));
 }
 
 main().catch((error) => {

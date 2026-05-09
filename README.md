@@ -73,9 +73,12 @@ npm run crawl:douyin -- 2026-04-15
 
 面板启动爬取时默认会弹出浏览器窗口，方便观察实际访问情况；如果想后台运行，可以用 `HEADLESS=1 npm run ui` 启动面板。
 
-抖音默认启用随机停留，降低访问过快导致的加载不完整或访问限制风险。可以用环境变量调整：
+小红书和抖音默认启用随机停留，降低访问过快导致的加载不完整或访问限制风险。可以用环境变量调整：
 
 ```bash
+XHS_DETAIL_READ_DELAY=2000-5000 \
+XHS_DETAIL_GAP_DELAY=1500-4000 \
+XHS_SCROLL_DELAY=1800-3500 \
 DOUYIN_DETAIL_READ_DELAY=3000-7000 \
 DOUYIN_DETAIL_GAP_DELAY=2000-5000 \
 DOUYIN_SCROLL_DELAY=2000-4000 \
