@@ -40,6 +40,29 @@ test("date prefilter only skips details with reliable out-of-range dates", async
   });
 });
 
+test("publish date range checks compare calendar dates instead of Date timestamps", async () => {
+  const { isPublishedAtInDateRange } = await loadRuntime();
+  const range = {
+    since: new Date(2026, 4, 20, 0, 0, 0),
+    until: new Date(2026, 4, 22, 0, 0, 0)
+  };
+
+  assert.equal(
+    isPublishedAtInDateRange({
+      publishedAt: new Date(2026, 4, 22, 23, 59, 59),
+      ...range
+    }),
+    true
+  );
+  assert.equal(
+    isPublishedAtInDateRange({
+      publishedAt: new Date(2026, 4, 23, 0, 0, 0),
+      ...range
+    }),
+    false
+  );
+});
+
 test("detail cache honors disabled and refresh modes and survives corrupt files", async () => {
   const { DetailCache } = await loadRuntime();
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "crawl-cache-"));

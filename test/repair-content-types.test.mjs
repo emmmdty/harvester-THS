@@ -17,11 +17,14 @@ test("content type repair reads Feishu URL arrays and updates tag-classified row
         "1",
         "05 21",
         urlCell("https://www.douyin.com/video/1"),
+        "标题",
+        "#同花顺资讯 #投资",
+        "",
+        "",
         "投资号",
         "无",
         "",
-        "标题",
-        "#同花顺资讯 #投资"
+        ""
       ]
     ],
     classify: async () => ({ contentType: "资讯", contentTypeReview: "通过", source: "tag" })
@@ -53,9 +56,12 @@ test("content type repair preserves existing type when evidence is insufficient"
         "2",
         "05 20",
         urlCell("https://www.douyin.com/video/2"),
+        "",
+        "",
+        "",
+        "",
         "投资号",
         "长视频",
-        "",
         "",
         ""
       ]

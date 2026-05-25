@@ -104,7 +104,7 @@ runButton.addEventListener("click", async () => {
   }
 
   const body = currentPlatform === "daily"
-    ? { platform: currentPlatform, targetDate: since, mode: crawlModeSelect.value }
+    ? { platform: currentPlatform, since, until, mode: crawlModeSelect.value }
     : { platform: currentPlatform, since, until, mode: crawlModeSelect.value };
   if (currentPlatform === "xhs" && accountSelect.value) {
     body.account = accountSelect.value;
@@ -139,12 +139,15 @@ feishuWriteButton.addEventListener("click", async () => {
 });
 
 dailyRunButton.addEventListener("click", async () => {
-  const targetDate = targetDateInput.value.trim() || previousDateString();
-  targetDateInput.value = targetDate;
+  const since = sinceInput.value.trim() || targetDateInput.value.trim() || previousDateString();
+  const until = untilInput.value.trim() || addDaysToDateString(since, 1);
+  sinceInput.value = since;
+  untilInput.value = until;
+  targetDateInput.value = since;
   currentPlatform = "daily";
   renderPlatform();
   await loadStatus();
-  const result = await postJson("/api/daily/run", { targetDate, mode: crawlModeSelect.value });
+  const result = await postJson("/api/daily/run", { since, until, mode: crawlModeSelect.value });
   if (result?.error) appendLocalLog(result.error);
 });
 
@@ -410,14 +413,17 @@ function renderPlatform() {
   eyebrowEl.textContent = config.eyebrow;
   titleEl.textContent = config.title;
   loginButton.textContent = config.loginText;
-  dateLabelEl.textContent = currentPlatform === "daily" ? "目标日期" : "开始日期（含）";
-  untilField.hidden = currentPlatform === "daily";
+  dateLabelEl.textContent = "开始日期（含）";
+  untilField.hidden = false;
   accountField.hidden = currentPlatform !== "xhs";
   feishuWriteButton.hidden = currentPlatform === "daily";
   loginCheckButton.hidden = currentPlatform === "daily";
   loginCheckStatusEl.hidden = currentPlatform === "daily";
   if (currentPlatform === "daily") {
-    sinceInput.value = targetDateInput.value || previousDateString();
+    if (!sinceInput.value) sinceInput.value = targetDateInput.value || previousDateString();
+    if (!untilInput.value || untilInput.value <= sinceInput.value) {
+      untilInput.value = addDaysToDateString(sinceInput.value, 1);
+    }
   } else if (!untilInput.value || untilInput.value <= sinceInput.value) {
     untilInput.value = addDaysToDateString(sinceInput.value || todayDateString(), 1);
   }

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { formatDate as formatDateInTimeZone } from "./date-utils.mjs";
 
 const VALID_MODES = new Set(["conservative", "legacy"]);
 const HEAVY_RESOURCE_TYPES = new Set(["image", "media", "font"]);
@@ -98,21 +99,32 @@ export async function installConservativeResourceBlocker(context, { mode, label 
 }
 
 export function shouldInspectDetailByPublishedAt({ publishedAt, since, until }) {
+  const reason = comparePublishedAtToDateRange({ publishedAt, since, until });
+  if (reason === "unknown-date") return { inspect: true, reason };
+  if (reason === "before-since" || reason === "after-until") return { inspect: false, reason };
+  return { inspect: true, reason: "in-range" };
+}
+
+export function comparePublishedAtToDateRange({ publishedAt, since, until }) {
   const published = dateKey(publishedAt);
-  if (!published) return { inspect: true, reason: "unknown-date" };
+  if (!published) return "unknown-date";
 
   const sinceKey = dateKey(since);
   const untilKey = dateKey(until);
-  if (sinceKey && published < sinceKey) return { inspect: false, reason: "before-since" };
-  if (untilKey && published > untilKey) return { inspect: false, reason: "after-until" };
-  return { inspect: true, reason: "in-range" };
+  if (sinceKey && published < sinceKey) return "before-since";
+  if (untilKey && published > untilKey) return "after-until";
+  return "in-range";
+}
+
+export function isPublishedAtInDateRange({ publishedAt, since, until }) {
+  return comparePublishedAtToDateRange({ publishedAt, since, until }) === "in-range";
 }
 
 export function dateKey(value) {
   if (!value) return "";
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) return "";
-    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+    return formatDateInTimeZone(value);
   }
   const text = String(value).trim();
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);

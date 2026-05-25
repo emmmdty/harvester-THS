@@ -9,7 +9,9 @@ import { classifyContentType } from "./content-classifier.mjs";
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
 import {
   DetailCache,
+  comparePublishedAtToDateRange,
   createCrawlAudit,
+  dateKey,
   installConservativeResourceBlocker,
   logAuditSummary,
   resolveCrawlMode,
@@ -57,58 +59,77 @@ async function main() {
   console.log(`抖音采集模式：${modeLabel(CRAWL_MODE)}`);
 
   const accounts = await loadAccounts();
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    ...chromiumLaunchOptions(),
-    headless: HEADLESS,
-    viewport: { width: 1440, height: 1000 },
-    locale: "zh-CN",
-      timezoneId: "Asia/Shanghai"
-  });
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "https://www.douyin.com" }).catch(() => {});
-  const resourceBlocker = await installConservativeResourceBlocker(context, {
-    mode: CRAWL_MODE,
-    label: "抖音轻量页面模式"
-  });
-
-  const listPage = await context.newPage();
-  const detailPage = await context.newPage();
-  listPage.setDefaultTimeout(20_000);
-  detailPage.setDefaultTimeout(20_000);
-
   const rows = [];
   const audit = createCrawlAudit("douyin");
-  const detailCache = new DetailCache({
-    root: ROOT,
-    platformId: "douyin",
-    enabled: shouldUseDetailCache({ mode: CRAWL_MODE }),
-    refresh: shouldRefreshDetailCache()
-  });
-  const copyShare = shouldCopyDouyinShare({ mode: CRAWL_MODE });
-  for (const account of accounts) {
-    console.log(`\n==> 处理抖音账号：${account.name}`);
-    if (!account.url) {
-      console.warn(`账号缺少主页链接：${account.name}`);
-      continue;
-    }
+  const accountErrors = [];
+  let context = null;
+  let resourceBlocker = null;
 
-    const accountRows = await crawlAccountRecentFirst({
-      listPage,
-      detailPage,
-      accountName: account.name,
-      profileUrl: account.url,
-      audit: audit.account(account.name),
-      detailCache,
-      resourceBlocker,
-      copyShare
+  try {
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+      ...chromiumLaunchOptions(),
+      headless: HEADLESS,
+      viewport: { width: 1440, height: 1000 },
+      locale: "zh-CN",
+        timezoneId: "Asia/Shanghai"
     });
-    rows.push(...accountRows);
-    console.log(`抖音账号完成：${account.name}，命中 ${accountRows.length} 条`);
+    await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "https://www.douyin.com" }).catch(() => {});
+    resourceBlocker = await installConservativeResourceBlocker(context, {
+      mode: CRAWL_MODE,
+      label: "抖音轻量页面模式"
+    });
+
+    const listPage = await context.newPage();
+    const detailPage = await context.newPage();
+    listPage.setDefaultTimeout(20_000);
+    detailPage.setDefaultTimeout(20_000);
+
+    const detailCache = new DetailCache({
+      root: ROOT,
+      platformId: "douyin",
+      enabled: shouldUseDetailCache({ mode: CRAWL_MODE }),
+      refresh: shouldRefreshDetailCache()
+    });
+    const copyShare = shouldCopyDouyinShare({ mode: CRAWL_MODE });
+    for (const account of accounts) {
+      console.log(`\n==> 处理抖音账号：${account.name}`);
+      if (!account.url) {
+        console.warn(`账号缺少主页链接：${account.name}`);
+        continue;
+      }
+
+      try {
+        const accountRows = await crawlAccountRecentFirst({
+          listPage,
+          detailPage,
+          accountName: account.name,
+          profileUrl: account.url,
+          audit: audit.account(account.name),
+          detailCache,
+          resourceBlocker,
+          copyShare
+        });
+        rows.push(...accountRows);
+        console.log(`抖音账号完成：${account.name}，命中 ${accountRows.length} 条`);
+      } catch (error) {
+        const message = error.message || String(error);
+        audit.account(account.name).stop("account-error");
+        accountErrors.push({ accountName: account.name, error: message });
+        console.warn(`抖音账号失败，继续下一个账号：${account.name}，原因：${message}`);
+        if (isFatalDouyinAccountError(error)) throw error;
+      }
+    }
+  } finally {
+    await resourceBlocker?.close().catch(() => {});
+    await context?.close().catch(() => {});
   }
 
   logAuditSummary(audit);
-  await resourceBlocker.close();
-  await context.close();
-  await writeOutputs(rows, { audit: audit.toJSON(), mode: CRAWL_MODE });
+  const auditSummary = {
+    ...audit.toJSON(),
+    accountErrors
+  };
+  await writeOutputs(rows, { audit: auditSummary, mode: CRAWL_MODE });
   console.log(`\n抖音完成：导出 ${rows.length} 条`);
 }
 
@@ -235,8 +256,9 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
         continue;
       }
 
-      const publishedAt = formatDate(detail.publishedAt);
-      if (detail.publishedAt < SINCE) {
+      const publishedAt = dateKey(detail.publishedAt);
+      const rangePosition = comparePublishedAtToDateRange({ publishedAt: detail.publishedAt, since: SINCE, until: TODAY });
+      if (rangePosition === "before-since") {
         oldItemRounds += 1;
         console.log(`边界检查：发现早于开始日期的作品，不导出：${accountName} ${publishedAt} ${detail.itemUrl || link.exportUrl}`);
         if ((hasInRangeItem || checked >= MIN_CHECK_BEFORE_STOP) && oldItemRounds >= OLD_ITEM_STOP_AFTER) {
@@ -249,7 +271,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
 
       oldItemRounds = 0;
 
-      if (detail.publishedAt > TODAY) {
+      if (rangePosition === "after-until") {
         console.log(`跳过晚于结束日期作品：${accountName} ${publishedAt} ${detail.itemUrl || link.exportUrl}`);
         continue;
       }
@@ -846,6 +868,11 @@ function isCacheableDouyinDetail(detail) {
 
 function shouldRetryDouyinDetailUnblocked(detail) {
   return Boolean(!detail?.publishedAt || !detail?.authorProfileUrl);
+}
+
+function isFatalDouyinAccountError(error) {
+  const message = error.message || String(error);
+  return /登录状态|重新登录|需要重新登录|登录后查看更多|扫码登录|验证码登录|手机号登录|请登录|登录后查看/.test(message);
 }
 
 function modeLabel(mode) {

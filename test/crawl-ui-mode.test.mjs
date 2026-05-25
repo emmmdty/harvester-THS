@@ -20,7 +20,7 @@ test("UI exposes conservative and legacy crawl modes and sends mode to crawl API
 
   assert.match(app, /const crawlModeSelect = document\.querySelector\("#crawl-mode"\)/);
   assert.match(app, /mode: crawlModeSelect\.value/);
-  assert.match(app, /postJson\("\/api\/daily\/run", \{ targetDate, mode: crawlModeSelect\.value \}\)/);
+  assert.match(app, /postJson\("\/api\/daily\/run", \{ since, until, mode: crawlModeSelect\.value \}\)/);
 
   assert.match(server, /const crawlMode = normalizeCrawlMode\(body\?\.mode\)/);
   assert.match(server, /args\.push\("--mode", crawlMode\)/);

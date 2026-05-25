@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import cron from "node-cron";
 import { isDocker } from "./browser-env.mjs";
-import { endExclusiveDateToInclusiveUntilDate, normalizeDateInput, previousDateString } from "./date-utils.mjs";
+import { addDaysToDateString, endExclusiveDateToInclusiveUntilDate, normalizeDateInput, previousDateString } from "./date-utils.mjs";
 import { writePlatformJsonToFeishu } from "./feishu-writer.mjs";
 import { checkPlatformLogin, summarizeLoginCheckResults } from "./login-check.mjs";
 import { loadXhsAccounts, selectXhsAccounts } from "./xhs-accounts.mjs";
@@ -170,7 +170,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/daily/run") {
       const body = await readJson(req);
-      await startCrawl(res, PLATFORMS.daily, { targetDate: body?.targetDate || body?.since, mode: body?.mode });
+      await startCrawl(res, PLATFORMS.daily, body);
       return;
     }
 
@@ -338,12 +338,13 @@ async function startCrawl(res, platform, body) {
   let crawlerUntilDate;
   try {
     sinceDate = normalizeDateInput(dateInput);
-    endExclusiveDate = platform.id === "daily"
-      ? sinceDate
-      : normalizeDateInput(String(body?.until || sinceDate).trim());
-    crawlerUntilDate = platform.id === "daily"
-      ? sinceDate
-      : endExclusiveDateToInclusiveUntilDate(sinceDate, endExclusiveDate);
+    if (platform.id === "daily" && !body?.until) {
+      endExclusiveDate = addDaysToDateString(sinceDate, 1);
+      crawlerUntilDate = sinceDate;
+    } else {
+      endExclusiveDate = normalizeDateInput(String(body?.until || sinceDate).trim());
+      crawlerUntilDate = endExclusiveDateToInclusiveUntilDate(sinceDate, endExclusiveDate);
+    }
   } catch {
     sendJson(res, { error: "请输入有效日期，且结束日期必须晚于开始日期，例如 2026-05-19 -> 2026-05-20" }, 400);
     return;
@@ -372,14 +373,12 @@ async function startCrawl(res, platform, body) {
     }
   }
 
-  const rangeText = platform.id === "daily"
-    ? sinceDate
-    : formatHalfOpenDateRange(sinceDate, endExclusiveDate);
+  const rangeText = formatHalfOpenDateRange(sinceDate, endExclusiveDate);
   const accountText = accountFilter ? `，账号：${accountFilter}` : "";
   appendLog(platform.id, `启动${platform.label}任务，日期：${rangeText}${accountText}，模式：${modeLabel(crawlMode)}，启动时间：${formatTimestamp()}`);
 
   const args = platform.id === "daily"
-    ? [platform.crawlScript, "--target-date", sinceDate]
+    ? [platform.crawlScript, "--since", sinceDate, "--until", endExclusiveDate]
     : [platform.crawlScript, "--since", sinceDate, "--until", crawlerUntilDate];
   args.push("--mode", crawlMode);
   if (platform.id === "xhs" && accountFilter) {

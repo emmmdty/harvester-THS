@@ -67,6 +67,9 @@ export function outputJsonPath(platformId, sinceDate, root = process.cwd(), unti
   return path.join(root, "output", `${outputBaseName(platformId, sinceDate, untilDate, options)}.json`);
 }
 
-export function dailySummaryPath(targetDate, root = process.cwd()) {
-  return path.join(root, "output", `${DAILY_OUTPUT_PREFIX}${targetDate}.json`);
+export function dailySummaryPath(sinceDate, root = process.cwd(), untilDate = sinceDate) {
+  const datePart = untilDate && untilDate !== sinceDate
+    ? `${sinceDate}_to_${untilDate}`
+    : sinceDate;
+  return path.join(root, "output", `${DAILY_OUTPUT_PREFIX}${datePart}.json`);
 }

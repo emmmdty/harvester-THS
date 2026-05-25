@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   douyinProfileIdsMatch,
   extractDouyinUserId,
   extractPrimaryDouyinAuthorProfileUrl
 } from "../src/douyin-profile-guard.mjs";
+
+const ROOT = process.cwd();
 
 test("extractDouyinUserId normalizes profile ids from Douyin URLs", () => {
   assert.equal(
@@ -31,4 +35,13 @@ test("douyinProfileIdsMatch rejects a video owned by a different account", () =>
 
   assert.equal(douyinProfileIdsMatch(expected, actual), false);
   assert.equal(douyinProfileIdsMatch(expected, expected), true);
+});
+
+test("douyin crawler isolates account failures and closes browser state on errors", async () => {
+  const source = await fs.readFile(path.join(ROOT, "src", "crawl-douyin.mjs"), "utf8");
+
+  assert.match(source, /const accountErrors = \[\]/);
+  assert.match(source, /catch \(error\) \{[\s\S]*accountErrors\.push/);
+  assert.match(source, /if \(isFatalDouyinAccountError\(error\)\) throw error/);
+  assert.match(source, /finally \{[\s\S]*resourceBlocker\?\.close\(\)[\s\S]*context\?\.close\(\)/);
 });

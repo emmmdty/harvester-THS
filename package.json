@@ -11,6 +11,8 @@
     "crawl:douyin": "node src/crawl-douyin.mjs",
     "crawl:bilibili": "node src/crawl-bilibili.mjs",
     "collect:daily": "node src/collect-daily.mjs",
+    "clean:daily": "node src/clean-daily.mjs",
+    "feishu:template": "node src/apply-feishu-template.mjs",
     "repair:content-types": "node src/repair-content-types.mjs",
     "doctor": "node src/doctor.mjs",
     "ui": "node src/server.mjs",

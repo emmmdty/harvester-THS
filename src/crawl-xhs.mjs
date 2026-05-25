@@ -8,10 +8,12 @@ import { buildXhsExploreUrl, extractXhsNoteId, normalizeXhsContentLink } from ".
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
 import { isXhsProfileUrl, loadXhsAccounts, selectXhsAccounts } from "./xhs-accounts.mjs";
 import { buildXhsOutputBaseName } from "./xhs-output-names.mjs";
-import { resolveXhsPublishedAt } from "./xhs-published-date.mjs";
+import { createXhsDetailRiskGuard, resolveXhsPublishedAt } from "./xhs-published-date.mjs";
 import {
   DetailCache,
   createCrawlAudit,
+  comparePublishedAtToDateRange,
+  dateKey,
   installConservativeResourceBlocker,
   logAuditSummary,
   resolveCrawlMode,
@@ -34,6 +36,7 @@ const OLD_NOTE_STOP_AFTER = Number(process.env.OLD_NOTE_STOP_AFTER || 4);
 const MIN_CHECK_BEFORE_STOP = Number(process.env.MIN_CHECK_BEFORE_STOP || 8);
 const DETAIL_READ_DELAY = parseDelayRange(process.env.XHS_DETAIL_READ_DELAY || "2000-5000");
 const DETAIL_GAP_DELAY = parseDelayRange(process.env.XHS_DETAIL_GAP_DELAY || "1500-4000");
+const BLOCKED_DETAIL_STOP_AFTER = Number(process.env.XHS_BLOCKED_DETAIL_STOP_AFTER || 2);
 const SCROLL_DELAY = parseDelayRange(process.env.XHS_SCROLL_DELAY || "1800-3500");
 const HEADLESS = resolveHeadless();
 
@@ -158,6 +161,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
   let checked = 0;
   let hasInRangeNote = false;
   let stopped = false;
+  const detailRiskGuard = createXhsDetailRiskGuard({ stopAfter: BLOCKED_DETAIL_STOP_AFTER });
   const stop = (reason) => {
     if (!stopped) {
       audit?.stop(reason);
@@ -232,17 +236,30 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
           await detailCache.set(link.id, serializeXhsDetailForCache(detail));
         }
       }
+      const risk = detailRiskGuard.record(detail);
+      if (detail.blocked) {
+        audit?.recordSkipped("detail-blocked");
+        console.warn(`详情页触发风控或不可浏览：${link.exportUrl} stateTime=${link.stateTimeValue ?? ""}`);
+        if (risk.shouldStop) {
+          stop("detail-blocked");
+          throw new Error(`小红书账号 ${accountName} 连续 ${risk.consecutiveBlocked} 次详情页触发风控，已停止该账号详情访问。`);
+        }
+        continue;
+      }
       const effectivePublishedAt = resolveXhsPublishedAt({
         detailPublishedAt: detail.publishedAt,
-        statePublishedAt: link.statePublishedAt
+        statePublishedAt: link.statePublishedAt,
+        detailBlocked: detail.blocked
       });
       if (!effectivePublishedAt) {
-        console.warn(`未识别发布时间：${link.exportUrl} stateTime=${link.stateTimeValue ?? ""}`);
+        const reason = detail.blocked ? "详情页触发风控或不可浏览" : "未识别发布时间";
+        console.warn(`${reason}：${link.exportUrl} stateTime=${link.stateTimeValue ?? ""}`);
         continue;
       }
 
-      const publishedAt = formatDate(effectivePublishedAt);
-      if (effectivePublishedAt < SINCE) {
+      const publishedAt = dateKey(effectivePublishedAt);
+      const rangePosition = comparePublishedAtToDateRange({ publishedAt: effectivePublishedAt, since: SINCE, until: TODAY });
+      if (rangePosition === "before-since") {
         oldNoteRounds += 1;
         console.log(`边界检查：发现早于开始日期的作品，不导出：${accountName} ${publishedAt} ${link.exportUrl}`);
         if ((hasInRangeNote || checked >= MIN_CHECK_BEFORE_STOP) && oldNoteRounds >= OLD_NOTE_STOP_AFTER) {
@@ -255,7 +272,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
 
       oldNoteRounds = 0;
 
-      if (effectivePublishedAt > TODAY) {
+      if (rangePosition === "after-until") {
         console.log(`跳过晚于结束日期作品：${accountName} ${publishedAt} ${link.exportUrl}`);
         continue;
       }

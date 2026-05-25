@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { normalizeDateInput, previousDateString } from "./date-utils.mjs";
+import { endExclusiveDateToInclusiveUntilDate, normalizeDateInput, previousDateString } from "./date-utils.mjs";
 import { DAILY_PLATFORM_IDS, getPlatformConfig } from "./platform-config.mjs";
 import { normalizeCrawlMode } from "./crawl-runtime.mjs";
 import { collectDaily } from "./collect-daily-runner.mjs";
@@ -8,7 +8,12 @@ const ROOT = process.cwd();
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const targetDate = normalizeDateInput(options.targetDate || process.env.TARGET_DATE || previousDateString());
+  const hasRangeInput = Boolean(options.since || process.env.SINCE || options.until || process.env.UNTIL);
+  const targetDate = normalizeDateInput(options.targetDate || process.env.TARGET_DATE || (!hasRangeInput ? previousDateString() : options.since || process.env.SINCE));
+  const sinceDate = normalizeDateInput(options.since || process.env.SINCE || targetDate);
+  const untilDate = options.until || process.env.UNTIL
+    ? endExclusiveDateToInclusiveUntilDate(sinceDate, normalizeDateInput(options.until || process.env.UNTIL))
+    : targetDate;
   const platforms = parsePlatforms(options.platform || "all");
   const skipFeishu = Boolean(options.skipFeishu);
   const crawlMode = normalizeCrawlMode(options.mode || process.env.CRAWL_MODE);
@@ -16,6 +21,8 @@ async function main() {
   const result = await collectDaily({
     root: ROOT,
     targetDate,
+    sinceDate,
+    untilDate,
     platforms,
     skipFeishu,
     crawlMode
@@ -42,6 +49,24 @@ function parseArgs(args) {
     }
     if (arg.startsWith("--target-date=")) {
       options.targetDate = arg.slice("--target-date=".length);
+      continue;
+    }
+    if (arg === "--since" || arg === "-s") {
+      options.since = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--since=")) {
+      options.since = arg.slice("--since=".length);
+      continue;
+    }
+    if (arg === "--until" || arg === "-u") {
+      options.until = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--until=")) {
+      options.until = arg.slice("--until=".length);
       continue;
     }
     if (arg === "--platform" || arg === "-p") {

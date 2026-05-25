@@ -10,6 +10,8 @@ const NODE_BIN = process.execPath;
 export async function collectDaily({
   root = process.cwd(),
   targetDate,
+  sinceDate = targetDate,
+  untilDate = targetDate || sinceDate,
   platforms,
   skipFeishu = false,
   crawlMode = "conservative",
@@ -19,30 +21,52 @@ export async function collectDaily({
   writePlatformJsonToFeishu = defaultWritePlatformJsonToFeishu,
   log = console.log
 }) {
+  sinceDate = sinceDate || targetDate;
+  untilDate = untilDate || sinceDate;
   await fs.mkdir(path.join(root, "output"), { recursive: true });
   const summary = {
     ok: false,
-    targetDate,
+    targetDate: sinceDate,
+    sinceDate,
+    untilDate,
     startedAt: new Date().toISOString(),
     skipFeishu,
     platforms: {}
   };
 
-  log(`每日采集目标日期：${targetDate}`);
+  const rangeText = sinceDate === untilDate ? sinceDate : `${sinceDate} 至 ${untilDate}`;
+  log(`每日采集目标日期：${rangeText}`);
   log(`采集平台：${platforms.map((id) => getPlatformConfig(id).label).join("、")}`);
   log(`采集模式：${crawlMode === "legacy" ? "兼容旧模式" : "保守提速"}`);
   if (skipFeishu) log("已启用 --skip-feishu，本次只采集并生成本地输出。");
 
+  let client = null;
   for (const platformId of platforms) {
     const config = getPlatformConfig(platformId);
     log(`\n==> 开始 ${config.label}`);
     try {
-      await runPlatformCrawler(platformId, targetDate, crawlMode, { root });
-      summary.platforms[platformId] = {
-        status: "crawled",
-        collected: 0,
+      await runPlatformCrawler(platformId, sinceDate, untilDate, crawlMode, { root });
+      const items = await readPlatformItems(platformId, sinceDate, root, untilDate);
+      const platformSummary = {
+        status: "collected",
+        collected: items.length,
         feishu: null
       };
+      if (!skipFeishu) {
+        client = client || createClient();
+        const result = await writePlatformJsonToFeishu({
+          platformId,
+          targetDate: sinceDate,
+          sinceDate,
+          untilDate,
+          root,
+          client
+        });
+        platformSummary.status = "written";
+        platformSummary.feishu = result.feishu;
+        log(`${config.label} 飞书写入：新增 ${result.feishu.created}，跳过 ${result.feishu.skipped}`);
+      }
+      summary.platforms[platformId] = platformSummary;
     } catch (error) {
       summary.platforms[platformId] = {
         status: "failed",
@@ -50,64 +74,30 @@ export async function collectDaily({
         feishu: null,
         error: error.message || String(error)
       };
-      log(`${config.label} 采集失败：${error.message || String(error)}`);
-    }
-  }
-
-  for (const platformId of platforms) {
-    const platformSummary = summary.platforms[platformId];
-    if (platformSummary?.status === "failed") continue;
-    try {
-      const items = await readPlatformItems(platformId, targetDate, root);
-      platformSummary.status = "collected";
-      platformSummary.collected = items.length;
-    } catch (error) {
-      platformSummary.status = "failed";
-      platformSummary.error = error.message || String(error);
-      log(`${getPlatformConfig(platformId).label} 读取本地输出失败：${platformSummary.error}`);
+      log(`${config.label} 失败：${error.message || String(error)}`);
     }
   }
 
   const failedPlatforms = platforms.filter((platformId) => summary.platforms[platformId]?.status === "failed");
+  summary.ok = failedPlatforms.length === 0;
   if (failedPlatforms.length > 0) {
-    summary.ok = false;
-    summary.feishuSkippedReason = "采集阶段存在失败平台，已跳过飞书写入。";
-    summary.finishedAt = new Date().toISOString();
-    await writeSummary(summary, root);
-    log(`\n每日采集存在失败平台：${failedPlatforms.map((id) => getPlatformConfig(id).label).join("、")}。已跳过飞书写入。`);
-    return { ok: false, summary };
+    summary.partialFailureReason = "部分平台采集失败，成功平台已按日期写入飞书。";
+    log(`\n每日采集存在失败平台：${failedPlatforms.map((id) => getPlatformConfig(id).label).join("、")}。成功平台已继续写入。`);
   }
-
-  if (!skipFeishu) {
-    const client = createClient();
-    for (const platformId of platforms) {
-      const config = getPlatformConfig(platformId);
-      const result = await writePlatformJsonToFeishu({
-        platformId,
-        targetDate,
-        root,
-        client
-      });
-      summary.platforms[platformId].feishu = result.feishu;
-      log(`${config.label} 飞书写入：新增 ${result.feishu.created}，跳过 ${result.feishu.skipped}`);
-    }
-  }
-
-  summary.ok = true;
   summary.finishedAt = new Date().toISOString();
   await writeSummary(summary, root);
-  log(`\n每日采集汇总：${dailySummaryPath(targetDate, root)}`);
-  return { ok: true, summary };
+  log(`\n每日采集汇总：${dailySummaryPath(sinceDate, root, untilDate)}`);
+  return { ok: summary.ok, summary };
 }
 
-export async function defaultRunPlatformCrawler(platformId, targetDate, crawlMode, { root = process.cwd() } = {}) {
+export async function defaultRunPlatformCrawler(platformId, sinceDate, untilDate, crawlMode, { root = process.cwd() } = {}) {
   const paths = resolvePlatformPaths(platformId, root);
   await runCommand(NODE_BIN, [
     paths.crawlScriptPath,
     "--since",
-    targetDate,
+    sinceDate,
     "--until",
-    targetDate,
+    untilDate,
     "--mode",
     crawlMode
   ], {
@@ -120,7 +110,7 @@ export async function defaultRunPlatformCrawler(platformId, targetDate, crawlMod
 }
 
 async function writeSummary(summary, root) {
-  const summaryPath = dailySummaryPath(summary.targetDate, root);
+  const summaryPath = dailySummaryPath(summary.sinceDate || summary.targetDate, root, summary.untilDate || summary.targetDate);
   await fs.writeFile(summaryPath, JSON.stringify(summary, null, 2), "utf8");
 }
 

@@ -129,19 +129,26 @@ cp .env.example .env
 - `FEISHU_SHEET_DOUYIN`
 - `FEISHU_SHEET_XHS`
 - `FEISHU_SHEET_BILIBILI`
+- `FEISHU_SHEET_STEP15_FILTERED`，Step 1.5 筛选后输出工作表
 - `FEISHU_OPEN_BASE_URL`，默认 `https://open.feishu.cn`
 - `DEEPSEEK_BASE_URL`，默认 `https://api.deepseek.com`
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_MODEL`
+- `STEP15_FILTER_PROVIDER`，可填 `qwen`、`minimax` 或 `local`
+- `STEP15_ASR_COMMAND`，可选，本地音频转写命令模板，支持 `{audio}` 和 `{output}` 占位符
+- `STEP15_OCR_COMMAND`，可选，本地 OCR 命令模板，支持 `{image}` 和 `{output}` 占位符
+- `QWEN_API_KEY`、`QWEN_MODEL`、`QWEN_BASE_URL`，用于 Step 1.5 Qwen 多模态筛选
+- `MINIMAX_API_KEY`、`MINIMAX_IMAGE_UNDERSTANDING_ENDPOINT`，用于 Step 1.5 MiniMax 图像理解筛选
 - `PANEL_PASSWORD`，本机模式可留空；局域网共享或 Docker 模式必须填写
 
-普通表格里需要提前建好三个工作表，并在每个工作表第 1 行按顺序写表头：
+普通表格里需要提前建好三个采集工作表和一个 Step 1.5 输出工作表，并在每个工作表第 1 行按顺序写表头：
 
-- 抖音：`编号`、`投稿时间`、`内容链接`、`账号`、`内容类型`、`内容类型标签审核`、`标题`、`tag词`
+- 抖音：`编号`、`投稿时间`、`内容链接`、`标题`、`tag词`、`筛选状态`、`简短理由`、`账号`、`内容类型`、`内容类型标签审核`、`本地素材目录`
 - 小红书：`编号`、`投稿时间`、`内容链接`、`笔记ID`、`账号`、`内容类型`、`内容类型标签审核`、`tag词`
 - B站：`编号`、`投稿时间`、`内容链接`、`短链id`、`账号`
+- Step 1.5 输出表：`编号`、`投稿时间`、`内容链接`、`账号`、`内容类型`、`简短理由`、`是否投放成功`、`是否为爆款`、`供稿人`、`备注`
 
-如果已有抖音工作表只配置到 `内容类型`，请在 F 列补 `内容类型标签审核`、G 列补 `标题`、H 列补 `tag词`。如果已有小红书工作表只配置到 `内容类型`，请在 G 列补 `内容类型标签审核`、H 列补 `tag词`。补完后运行 `npm run doctor` 或开始写入。
+Step 1.5 会在原始抖音表 F/G/K 写回 `筛选状态`、`简短理由`、`本地素材目录`；`抖音筛选结果` 只写入可投放内容，`是否投放成功`、`是否为爆款`、`供稿人`、`备注` 留给人工填写。如果已有小红书工作表只配置到 `内容类型`，请在 G 列补 `内容类型标签审核`、H 列补 `tag词`。补完后运行 `npm run doctor` 或开始写入。
 
 如果你的链接是 Wiki 形式：
 
@@ -175,6 +182,7 @@ FEISHU_SPREADSHEET_TOKEN=shtcnxxxxxxxx
 FEISHU_SHEET_DOUYIN=abc123
 FEISHU_SHEET_XHS=def456
 FEISHU_SHEET_BILIBILI=ghi789
+FEISHU_SHEET_STEP15_FILTERED=jkl012
 ```
 
 写入前可检查飞书配置和字段：
@@ -182,6 +190,14 @@ FEISHU_SHEET_BILIBILI=ghi789
 ```bash
 npm run doctor
 ```
+
+如果要把现有飞书表格调整成投稿模板样式，先运行一次：
+
+```bash
+npm run feishu:template
+```
+
+该命令会把 `FEISHU_SHEET_STEP15_FILTERED` 对应工作表重命名为 `抖音筛选结果`，并给抖音、小红书、B站和抖音筛选结果工作表写入顶部目标/规则行、表头颜色、合并单元格和冻结行。命令是幂等的，重复运行不会重复插入顶部模板行。模板化后，抖音和抖音筛选结果的数据从第 5 行开始，小红书和 B站的数据从第 3 行开始，采集和清洗脚本会自动识别真实数据区。
 
 如果已有历史数据需要补齐 `内容类型` 和 `内容类型标签审核`，先 dry-run 预览：
 
@@ -198,6 +214,14 @@ npm run repair:content-types -- --apply
 该修复只更新 `内容类型`、`内容类型标签审核` 两列；证据不足时会保留已有内容类型，并把 `内容类型标签审核` 标为 `需审核`。
 
 每日写入会按日期倒序插入批次：例如表里已有 5 月 19 日，写入 5 月 20 日会插在 5 月 19 日上面，写入 5 月 18 日会插在 5 月 19 日下面。每个日期批次会先插入一条分隔行，例如 `投稿时间 = 0519 投稿视频`；素材行编号按平台内每日从 `1` 开始顺序排列，例如 `1`、`2`、`3`。如果同一天分隔行已存在，补写的新素材会插在该日期批次末尾，并在写入后重排该批次编号。写入前会按工作表实际行数分块读取目标工作表已有行，跳过重复分隔行和重复素材链接/ID，不会删除用户已有数据。`内容链接` 列会写成飞书可点击超链接，单元格显示原始 URL。
+
+Step 1.5 内容清洗只读取抖音原始表；抖音会按本地规则和可配置多模态 provider 筛选，并把反馈写回原始抖音表 F/G/K，通过的抖音素材会写入 `抖音筛选结果`：
+
+```bash
+npm run clean:daily -- --target-date 2026-05-19
+```
+
+抖音素材会保存到 `output/step15-assets/YYYY-MM-DD/douyin/<awemeId>/`，包含 `source.json`、`manifest.json`、下载到的 `video.mp4` 或 `images/`、`frames/` 抽帧、`audio.wav`、`asr.txt`、`ocr.txt`。`manifest.json` 会记录素材来源行、文件路径和抽取状态；未配置本地 ASR/OCR 命令时，对应文本文件会保留为空并在 manifest 中标记为未配置。`reject` 和 `review` 的抖音内容不会进入筛选后输出表，但会保留在原始抖音表反馈列和 `output/step15_clean_YYYY-MM-DD.json` 明细中。未配置 `STEP15_FILTER_PROVIDER` 时，未命中本地硬规则的抖音内容会写为 `需人工复核`。
 
 面板启动爬取时默认会弹出浏览器窗口，方便观察实际访问情况；如果想后台运行，可以用 `HEADLESS=1 npm run ui` 启动面板。
 

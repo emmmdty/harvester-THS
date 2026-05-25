@@ -3,7 +3,9 @@ import {
   filterNewDailySheetRecords,
   mapDailyRecordToSheetRow,
   PLATFORM_DROPDOWN_COLUMNS,
-  PLATFORM_HEADERS
+  PLATFORM_HEADERS,
+  PLATFORM_LEGACY_HEADERS,
+  PLATFORM_SHEET_LAYOUTS
 } from "./daily-records.mjs";
 import { compareDateStrings, parseDateStringParts, pad } from "./date-utils.mjs";
 
@@ -18,7 +20,8 @@ export const REQUIRED_FEISHU_ENV = [
 const SHEET_ENV_BY_PLATFORM = {
   douyin: "FEISHU_SHEET_DOUYIN",
   xhs: "FEISHU_SHEET_XHS",
-  bilibili: "FEISHU_SHEET_BILIBILI"
+  bilibili: "FEISHU_SHEET_BILIBILI",
+  step15: "FEISHU_SHEET_STEP15_FILTERED"
 };
 const DROPDOWN_MAX_ROW = 5000;
 const READ_CHUNK_SIZE = 5000;
@@ -51,17 +54,23 @@ export function loadFeishuConfig(env = process.env) {
     throw error;
   }
 
+  const sheets = {
+    douyin: env.FEISHU_SHEET_DOUYIN.trim(),
+    xhs: env.FEISHU_SHEET_XHS.trim(),
+    bilibili: env.FEISHU_SHEET_BILIBILI.trim()
+  };
+  const step15Sheet = String(env.FEISHU_SHEET_STEP15_FILTERED || "").trim();
+  if (step15Sheet) {
+    sheets.step15 = step15Sheet;
+  }
+
   return {
     appId: env.FEISHU_APP_ID.trim(),
     appSecret: env.FEISHU_APP_SECRET.trim(),
     spreadsheetToken: String(env.FEISHU_SPREADSHEET_TOKEN || "").trim(),
     wikiToken: String(env.FEISHU_WIKI_TOKEN || "").trim(),
     apiBaseUrl: String(env.FEISHU_OPEN_BASE_URL || "https://open.feishu.cn").replace(/\/+$/, ""),
-    sheets: {
-      douyin: env.FEISHU_SHEET_DOUYIN.trim(),
-      xhs: env.FEISHU_SHEET_XHS.trim(),
-      bilibili: env.FEISHU_SHEET_BILIBILI.trim()
-    }
+    sheets
   };
 }
 
@@ -69,11 +78,12 @@ export async function writeDailyPlatformRecords({ platformId, targetDate, items,
   const records = buildDailySheetRecords(platformId, targetDate, items);
   const existingRows = await client.readRows(platformId);
   const newRecords = filterNewDailySheetRecords(platformId, records, existingRows);
-  const existingDateBlocks = dateBlocksFromExistingRows(platformId, targetDate, existingRows);
+  const dataStartRow = dataStartRowFor(client, platformId);
+  const existingDateBlocks = dateBlocksFromExistingRows(platformId, targetDate, existingRows, dataStartRow);
   const separatorRows = separatorRowNumbersFromDateBlocks(existingDateBlocks, targetDate);
   let wroteRecords = false;
   if (newRecords.length > 0) {
-    const startInsertRow = insertRowForNewRecords(existingDateBlocks, newRecords, existingRows, targetDate);
+    const startInsertRow = insertRowForNewRecords(existingDateBlocks, newRecords, existingRows, targetDate, dataStartRow);
     const writeResult = await client.prependRows(
       platformId,
       newRecords.map((record) => mapDailyRecordToSheetRow(platformId, record)),
@@ -84,9 +94,10 @@ export async function writeDailyPlatformRecords({ platformId, targetDate, items,
     separatorRows.push(...separatorRowNumbersFromNewRecords(newRecords, startRow));
   }
   const rowsAfterWrite = wroteRecords ? await client.readRows(platformId) : existingRows;
-  await renumberTargetDateBatch(platformId, targetDate, client, rowsAfterWrite);
-  await clearTargetDateMaterialRowHighlights(platformId, targetDate, client, rowsAfterWrite);
-  separatorRows.push(...allSeparatorRowNumbersFromRows(platformId, targetDate, rowsAfterWrite));
+  const rowsAfterWriteDataStartRow = dataStartRowFor(client, platformId);
+  await renumberTargetDateBatch(platformId, targetDate, client, rowsAfterWrite, rowsAfterWriteDataStartRow);
+  await clearTargetDateMaterialRowHighlights(platformId, targetDate, client, rowsAfterWrite, rowsAfterWriteDataStartRow);
+  separatorRows.push(...allSeparatorRowNumbersFromRows(platformId, targetDate, rowsAfterWrite, rowsAfterWriteDataStartRow));
   if (separatorRows.length > 0 && typeof client.highlightSeparatorRows === "function") {
     await client.highlightSeparatorRows(platformId, uniqueRowNumbers(separatorRows));
   }
@@ -102,6 +113,7 @@ export class FeishuSheetsClient {
     this.config = config;
     this.fetch = options.fetch || globalThis.fetch;
     this.tenantAccessToken = options.tenantAccessToken || "";
+    this.detectedSheetLayouts = {};
   }
 
   async getTenantAccessToken() {
@@ -157,7 +169,57 @@ export class FeishuSheetsClient {
       const data = await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/values/${range}`);
       values.push(...(data.valueRange?.values || data.values || []));
     }
-    return values.slice(1);
+    const headerIndex = detectHeaderIndex(platformId, values);
+    const dataStartRow = headerIndex + 2;
+    this.detectedSheetLayouts[platformId] = {
+      headerRow: headerIndex + 1,
+      dataStartRow
+    };
+    return values.slice(dataStartRow - 1);
+  }
+
+  async readSheetRows(sheetKey, columnCount) {
+    const sheetId = this.sheetId(sheetKey);
+    const spreadsheetToken = await this.getSpreadsheetToken();
+    const columnEnd = columnName(columnCount);
+    const rowCount = Math.max(1, await this.sheetRowCount(sheetKey));
+    const values = [];
+    for (let rowStart = 1; rowStart <= rowCount; rowStart += READ_CHUNK_SIZE) {
+      const rowEnd = Math.min(rowCount, rowStart + READ_CHUNK_SIZE - 1);
+      const range = encodeURIComponent(`${sheetId}!A${rowStart}:${columnEnd}${rowEnd}`);
+      const data = await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/values/${range}`);
+      values.push(...(data.valueRange?.values || data.values || []));
+    }
+    return values;
+  }
+
+  async replaceSheetRows(sheetKey, rows, columnCount) {
+    const sheetId = this.sheetId(sheetKey);
+    const rowCount = Math.max(rows.length, await this.sheetRowCount(sheetKey));
+    const columnEnd = columnName(columnCount);
+    const blankRow = Array.from({ length: columnCount }, () => "");
+    const paddedRows = [
+      ...rows,
+      ...Array.from({ length: Math.max(0, rowCount - rows.length) }, () => blankRow)
+    ];
+    return await this.writeRows(sheetKey, `${sheetId}!A1:${columnEnd}${paddedRows.length}`, paddedRows);
+  }
+
+  async replaceSheetDataRows(sheetKey, rows, columnCount) {
+    const sheetId = this.sheetId(sheetKey);
+    const layout = this.sheetLayout(sheetKey);
+    const rowCount = Math.max(layout.dataStartRow, await this.sheetRowCount(sheetKey));
+    const columnEnd = columnName(columnCount);
+    const blankRow = Array.from({ length: columnCount }, () => "");
+    const paddedRows = [
+      ...rows,
+      ...Array.from({ length: Math.max(0, rowCount - layout.dataStartRow + 1 - rows.length) }, () => blankRow)
+    ];
+    return await this.writeRows(
+      sheetKey,
+      `${sheetId}!A${layout.dataStartRow}:${columnEnd}${layout.dataStartRow + paddedRows.length - 1}`,
+      paddedRows
+    );
   }
 
   async appendRows(platformId, rows) {
@@ -177,14 +239,33 @@ export class FeishuSheetsClient {
     });
   }
 
-  async prependRows(platformId, rows, startRow = 2) {
+  async prependRows(platformId, rows, startRow = null) {
     if (rows.length === 0) return;
     const sheetId = this.sheetId(platformId);
     const columnEnd = columnName(PLATFORM_HEADERS[platformId].length);
-    const rowStart = Math.max(2, Number(startRow) || 2);
+    const dataStartRow = this.dataStartRow(platformId);
+    const rowStart = Math.max(1, Number(startRow) || dataStartRow);
     const rowEnd = rowStart + rows.length - 1;
     await this.insertRows(platformId, rowStart, rows.length);
     return await this.writeRows(platformId, `${sheetId}!A${rowStart}:${columnEnd}${rowEnd}`, rows);
+  }
+
+  async insertRowsBefore(sheetKey, startRow, length) {
+    const sheetId = this.sheetId(sheetKey);
+    const spreadsheetToken = await this.getSpreadsheetToken();
+    const startIndex = Math.max(0, Number(startRow) - 1);
+    return await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/insert_dimension_range`, {
+      method: "POST",
+      body: JSON.stringify({
+        dimension: {
+          sheetId,
+          majorDimension: "ROWS",
+          startIndex,
+          endIndex: startIndex + length
+        },
+        inheritStyle: "BEFORE"
+      })
+    });
   }
 
   async insertRows(platformId, startRow, length) {
@@ -221,12 +302,13 @@ export class FeishuSheetsClient {
   async configurePlatformDropdowns(platformId) {
     const sheetId = this.sheetId(platformId);
     const headers = PLATFORM_HEADERS[platformId];
-    const rowEnd = Math.min(DROPDOWN_MAX_ROW, Math.max(2, await this.sheetRowCount(platformId)));
+    const dataStartRow = this.dataStartRow(platformId);
+    const rowEnd = Math.min(DROPDOWN_MAX_ROW, Math.max(dataStartRow, await this.sheetRowCount(platformId)));
     for (const dropdown of PLATFORM_DROPDOWN_COLUMNS[platformId] || []) {
       const columnIndex = headers.indexOf(dropdown.header) + 1;
       if (columnIndex <= 0) continue;
       const column = columnName(columnIndex);
-      await this.setDropdown(`${sheetId}!${column}2:${column}${rowEnd}`, dropdown.values, dropdown.colors);
+      await this.setDropdown(`${sheetId}!${column}${dataStartRow}:${column}${rowEnd}`, dropdown.values, dropdown.colors);
     }
   }
 
@@ -297,14 +379,64 @@ export class FeishuSheetsClient {
     });
   }
 
+  async renameSheet(sheetKey, title) {
+    const sheetId = this.sheetId(sheetKey);
+    return await this.operateSheets([
+      {
+        updateSheet: {
+          properties: {
+            sheetId,
+            title
+          }
+        }
+      }
+    ]);
+  }
+
+  async freezeRows(sheetKey, frozenRowCount) {
+    const sheetId = this.sheetId(sheetKey);
+    return await this.operateSheets([
+      {
+        updateSheet: {
+          properties: {
+            sheetId,
+            frozenRowCount
+          }
+        }
+      }
+    ]);
+  }
+
+  async mergeCells(sheetKey, range, mergeType = "MERGE_ALL") {
+    const spreadsheetToken = await this.getSpreadsheetToken();
+    const sheetId = this.sheetId(sheetKey);
+    return await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/merge_cells`, {
+      method: "POST",
+      body: JSON.stringify({
+        range: range.includes("!") ? range : `${sheetId}!${range}`,
+        mergeType
+      })
+    });
+  }
+
+  async operateSheets(requests) {
+    const spreadsheetToken = await this.getSpreadsheetToken();
+    return await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/sheets_batch_update`, {
+      method: "POST",
+      body: JSON.stringify({ requests })
+    });
+  }
+
   async readHeader(platformId) {
     const sheetId = this.sheetId(platformId);
     const spreadsheetToken = await this.getSpreadsheetToken();
     const columnEnd = columnName(PLATFORM_HEADERS[platformId].length);
-    const range = encodeURIComponent(`${sheetId}!A1:${columnEnd}1`);
+    const headerRow = this.headerRow(platformId);
+    const range = encodeURIComponent(`${sheetId}!A1:${columnEnd}${headerRow}`);
     const data = await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/values/${range}`);
     const values = data.valueRange?.values || data.values || [];
-    return values[0] || [];
+    const headerIndex = detectHeaderIndex(platformId, values);
+    return values[headerIndex] || [];
   }
 
   async verifySheet(platformId) {
@@ -329,6 +461,18 @@ export class FeishuSheetsClient {
     const sheetId = this.config.sheets[platformId];
     if (!sheetId) throw new Error(`缺少 ${SHEET_ENV_BY_PLATFORM[platformId]}。`);
     return sheetId;
+  }
+
+  sheetLayout(sheetKey) {
+    return this.detectedSheetLayouts[sheetKey] || PLATFORM_SHEET_LAYOUTS[sheetKey] || { headerRow: 1, dataStartRow: 2 };
+  }
+
+  headerRow(sheetKey) {
+    return this.sheetLayout(sheetKey).headerRow;
+  }
+
+  dataStartRow(sheetKey) {
+    return this.sheetLayout(sheetKey).dataStartRow;
   }
 
   async requestJson(path, options = {}) {
@@ -419,8 +563,8 @@ function separatorRowNumbersFromDateBlocks(dateBlocks, targetDate) {
     .map((block) => block.startRow);
 }
 
-function allSeparatorRowNumbersFromRows(platformId, targetDate, rows) {
-  return dateBlocksFromExistingRows(platformId, targetDate, rows)
+function allSeparatorRowNumbersFromRows(platformId, targetDate, rows, dataStartRow = 2) {
+  return dateBlocksFromExistingRows(platformId, targetDate, rows, dataStartRow)
     .map((block) => block.startRow);
 }
 
@@ -437,7 +581,7 @@ function separatorRowNumbersFromNewRecords(records, startRow) {
     .filter(Boolean);
 }
 
-function insertRowForNewRecords(dateBlocks, records, existingRows, targetDate) {
+function insertRowForNewRecords(dateBlocks, records, existingRows, targetDate, dataStartRow = 2) {
   const hasNewSeparator = records.some((record) => record.kind === "separator");
   const targetBlock = dateBlocks.find((block) => block.date === targetDate);
   if (!hasNewSeparator && targetBlock) {
@@ -446,13 +590,13 @@ function insertRowForNewRecords(dateBlocks, records, existingRows, targetDate) {
 
   if (hasNewSeparator) {
     const olderBlock = dateBlocks.find((block) => compareDateStrings(block.date, targetDate) < 0);
-    return olderBlock ? olderBlock.startRow : lastOccupiedSheetRow(existingRows) + 1;
+    return olderBlock ? olderBlock.startRow : lastOccupiedSheetRow(existingRows, dataStartRow) + 1;
   }
 
-  return 2;
+  return dataStartRow;
 }
 
-function dateBlocksFromExistingRows(platformId, targetDate, existingRows) {
+function dateBlocksFromExistingRows(platformId, targetDate, existingRows, dataStartRow = 2) {
   const blocks = [];
   for (let index = 0; index < (existingRows || []).length; index += 1) {
     const batchTitle = rowFieldValue(platformId, existingRows[index], "投稿时间");
@@ -464,17 +608,17 @@ function dateBlocksFromExistingRows(platformId, targetDate, existingRows) {
     if (date) {
       blocks.push({
         date,
-        startRow: index + 2,
-        endRowExclusive: nextSeparatorIndex + 2
+        startRow: index + dataStartRow,
+        endRowExclusive: nextSeparatorIndex + dataStartRow
       });
     }
   }
   return blocks;
 }
 
-async function renumberTargetDateBatch(platformId, targetDate, client, rows) {
+async function renumberTargetDateBatch(platformId, targetDate, client, rows, dataStartRow = 2) {
   if (typeof client.writeRows !== "function" || typeof client.sheetId !== "function") return;
-  const materialRows = materialRowNumbersForTargetDateBatch(platformId, targetDate, rows);
+  const materialRows = materialRowNumbersForTargetDateBatch(platformId, targetDate, rows, dataStartRow);
   if (materialRows.length === 0) return;
 
   const materialRowSet = new Set(materialRows);
@@ -489,21 +633,21 @@ async function renumberTargetDateBatch(platformId, targetDate, client, rows) {
   await client.writeRows(platformId, `${client.sheetId(platformId)}!A${rowStart}:A${rowEnd}`, values);
 }
 
-async function clearTargetDateMaterialRowHighlights(platformId, targetDate, client, rows) {
+async function clearTargetDateMaterialRowHighlights(platformId, targetDate, client, rows, dataStartRow = 2) {
   if (typeof client.clearMaterialRowHighlights !== "function") return;
-  const materialRows = materialRowNumbersForTargetDateBatch(platformId, targetDate, rows);
+  const materialRows = materialRowNumbersForTargetDateBatch(platformId, targetDate, rows, dataStartRow);
   if (materialRows.length === 0) return;
   await client.clearMaterialRowHighlights(platformId, rowRangesFromRowNumbers(materialRows));
 }
 
-function materialRowNumbersForTargetDateBatch(platformId, targetDate, rows) {
-  const targetBlock = dateBlocksFromExistingRows(platformId, targetDate, rows)
+function materialRowNumbersForTargetDateBatch(platformId, targetDate, rows, dataStartRow = 2) {
+  const targetBlock = dateBlocksFromExistingRows(platformId, targetDate, rows, dataStartRow)
     .find((block) => block.date === targetDate);
   if (!targetBlock) return [];
 
   const materialRows = [];
   for (let rowNumber = targetBlock.startRow + 1; rowNumber < targetBlock.endRowExclusive; rowNumber += 1) {
-    const row = rows[rowNumber - 2];
+    const row = rows[rowNumber - dataStartRow];
     if (isMaterialRow(platformId, row)) materialRows.push(rowNumber);
   }
   return materialRows;
@@ -598,14 +742,14 @@ function isMaterialRow(platformId, row) {
     : Object.values(row?.fields || row || {}).some((value) => String(value || "").trim());
 }
 
-function lastOccupiedSheetRow(existingRows) {
+function lastOccupiedSheetRow(existingRows, dataStartRow = 2) {
   for (let index = (existingRows || []).length - 1; index >= 0; index -= 1) {
     const row = existingRows[index];
     if (Array.isArray(row) ? row.some((value) => String(value || "").trim()) : Object.keys(row?.fields || row || {}).length > 0) {
-      return index + 2;
+      return index + dataStartRow;
     }
   }
-  return 1;
+  return dataStartRow - 1;
 }
 
 function startRowFromWriteResult(result) {
@@ -616,4 +760,40 @@ function startRowFromWriteResult(result) {
     || "";
   const match = String(range).match(/![A-Z]+(\d+)/i);
   return match ? Number(match[1]) : 0;
+}
+
+function dataStartRowFor(client, sheetKey) {
+  return typeof client?.dataStartRow === "function"
+    ? client.dataStartRow(sheetKey)
+    : 2;
+}
+
+function detectHeaderIndex(platformId, values) {
+  const headers = PLATFORM_HEADERS[platformId] || [];
+  const headerCandidates = [headers, ...(PLATFORM_LEGACY_HEADERS[platformId] || [])];
+  const expected = PLATFORM_SHEET_LAYOUTS[platformId]?.headerRow
+    ? PLATFORM_SHEET_LAYOUTS[platformId].headerRow - 1
+    : 0;
+  if (rowStartsWithAnyHeader(values[expected], headerCandidates)) return expected;
+  const fallback = values.findIndex((row) => rowStartsWithAnyHeader(row, headerCandidates));
+  return fallback >= 0 ? fallback : 0;
+}
+
+function rowStartsWithHeaders(row = [], headers = []) {
+  return headers.every((header, index) => cellText(row[index]) === header);
+}
+
+function rowStartsWithAnyHeader(row = [], headerCandidates = []) {
+  return headerCandidates.some((headers) => rowStartsWithHeaders(row, headers));
+}
+
+function cellText(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => cellText(entry)).find(Boolean) || "";
+  }
+  if (value && typeof value === "object") {
+    if (Array.isArray(value.values)) return value.values.map((entry) => cellText(entry)).filter(Boolean).join("、");
+    return String(value.text || value.link || value.url || "");
+  }
+  return String(value || "");
 }
