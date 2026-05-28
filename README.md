@@ -44,7 +44,7 @@ Playwright 已固定为 `1.59.1`，与 Docker 基础镜像 `mcr.microsoft.com/pl
 
 ### 方式一：本地面板
 
-启动面板：
+#### 本机启动
 
 ```bash
 npm run ui
@@ -52,17 +52,23 @@ npm run ui
 
 默认本机模式只监听 `127.0.0.1`，打开 `http://127.0.0.1:3000`，选择“小红书”“抖音”“B站”或“全渠道”，输入日期后点击开始爬取。页面会显示当前平台的实时日志和导出文件。采集模式默认是“保守提速”，会拦截图片、视频、字体等重资源，启用详情缓存和可靠列表时间预过滤；如遇平台页面兼容问题，可切到“兼容旧模式”回退到旧采集策略。
 
-如果要把面板共享给局域网同事，监听局域网地址即可：
+macOS 上也可以直接双击文件夹里的 `启动小红书爬取面板.command`。
+
+Windows 上可以直接双击文件夹里的 `启动小红书爬取面板.cmd`。
+
+#### 局域网启动
+
+如果要把作品采集面板共享给局域网同事，监听局域网地址即可：
 
 ```bash
 HOST=0.0.0.0 npm run ui
 ```
 
-局域网同事访问 `http://<运行机器局域网IP>:3000`。默认不需要输入共享口令；如果确实需要保护面板，可以额外设置 `PANEL_PASSWORD=换成共享口令`，页面会先要求输入共享口令。
+局域网同事访问 `http://<运行机器局域网IP>:3000`。默认不需要输入共享口令；如果确实需要保护面板，可以在 `.env` 中填写 `PANEL_PASSWORD=换成共享口令`，页面会先要求输入共享口令。
 
-macOS 上也可以直接双击文件夹里的 `启动小红书爬取面板.command`。
+macOS 上也可以直接双击文件夹里的 `启动局域网作品采集面板.command`。
 
-Windows 上可以直接双击文件夹里的 `启动小红书爬取面板.cmd`。
+Windows 上可以直接双击文件夹里的 `启动局域网作品采集面板.cmd`。
 
 首次使用或登录过期时，在面板选择对应平台后点击“打开登录”，登录成功并确认能正常访问平台页面后，关闭登录浏览器窗口，再点击“开始爬取”。小红书登录状态保存在本地 `.xhs-profile`，抖音登录状态保存在本地 `.douyin-profile`，B 站登录状态保存在本地 `.bilibili-profile`，这些目录不会上传到 GitHub。
 
@@ -75,6 +81,19 @@ npm run prod:check
 ```
 
 该检查不会访问飞书 API 或启动采集，只会确认 `.env`、飞书必要配置、三个平台登录态目录、定时配置和端口可用性。当前生产口径是可信局域网免口令；`PANEL_PASSWORD` 只在需要临时保护面板时填写，不是必填项。运行面板的电脑不要睡眠，且不要同时打开多个复用同一 profile 的 Chromium 采集/登录窗口。
+
+#### 复制给同事试用
+
+如果只是给同事临时试用，可以复制一份干净项目目录，但不要复制 `.env`、`node_modules/`、`.xhs-profile/`、`.douyin-profile/`、`.bilibili-profile/`、`.runtime/`、`output/` 和 `.git/`。同事拿到后执行：
+
+```bash
+npm ci --registry=https://registry.npmmirror.com
+npx playwright install chromium
+cp .env.example .env
+npm run ui
+```
+
+同事需要自己填写 `.env` 中的飞书配置，并在面板中分别登录小红书、抖音和 B 站。需要局域网共享时，再使用上面的 `HOST=0.0.0.0 npm run ui` 或双击局域网启动脚本。
 
 ### 方式二：命令行
 
@@ -147,6 +166,7 @@ cp .env.example .env
 - `STEP15_OCR_COMMAND`，可选，本地 OCR 命令模板，支持 `{image}` 和 `{output}` 占位符
 - `QWEN_API_KEY`、`QWEN_MODEL`、`QWEN_BASE_URL`，用于 Step 1.5 Qwen 多模态筛选
 - `MINIMAX_API_KEY`、`MINIMAX_IMAGE_UNDERSTANDING_ENDPOINT`，用于 Step 1.5 MiniMax 图像理解筛选
+- `HOST`，可选；留空时默认本机 `127.0.0.1`，局域网共享时填 `0.0.0.0`
 - `PANEL_PASSWORD`，可选；填写后面板会要求输入共享口令，不填写则直接进入面板
 
 普通表格里需要提前建好三个采集工作表和一个 Step 1.5 输出工作表，并在每个工作表第 1 行按顺序写表头：
