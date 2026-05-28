@@ -10,6 +10,7 @@ import { isDocker } from "./browser-env.mjs";
 import { addDaysToDateString, endExclusiveDateToInclusiveUntilDate, normalizeDateInput, previousDateString } from "./date-utils.mjs";
 import { writePlatformJsonToFeishu } from "./feishu-writer.mjs";
 import { checkPlatformLogin, summarizeLoginCheckResults } from "./login-check.mjs";
+import { recordSchedulerRun } from "./scheduler-run-history.mjs";
 import { loadXhsAccounts, selectXhsAccounts } from "./xhs-accounts.mjs";
 import { normalizeCrawlMode } from "./crawl-runtime.mjs";
 import {
@@ -765,19 +766,24 @@ function applyScheduler() {
 }
 
 async function startScheduledDailyRun() {
+  const targetDate = previousDateString(new Date());
+  const triggeredAt = new Date().toISOString();
   if (currentRun || loginProcess || loginCheckRunning) {
-    appendLog("daily", "定时任务触发，但当前有任务、登录浏览器或登录检测正在运行，本次跳过。");
+    const reason = "当前有任务、登录浏览器或登录检测正在运行。";
+    appendLog("daily", `定时任务触发，但${reason}本次跳过。`);
+    await recordSchedulerEvent({ status: "skipped", targetDate, reason, triggeredAt });
     return;
   }
 
-  const targetDate = previousDateString(new Date());
   logsByPlatform.set("daily", []);
   appendLog("daily", `定时任务触发，全渠道目标日期：${targetDate}，启动时间：${formatTimestamp()}`);
   const loginGate = await checkDailyPlatformLogins();
   if (!loginGate.ok) {
     appendLog("daily", `定时任务已中止：${loginGate.message}`);
+    await recordSchedulerEvent({ status: "skipped", targetDate, reason: loginGate.message, triggeredAt });
     return;
   }
+  await recordSchedulerEvent({ status: "started", targetDate, triggeredAt });
 
   currentRun = spawn(NODE_BIN, [
     PLATFORMS.daily.crawlScript,
@@ -792,19 +798,42 @@ async function startScheduledDailyRun() {
 
   currentRun.stdout.on("data", (chunk) => appendLog("daily", chunk.toString()));
   currentRun.stderr.on("data", (chunk) => appendLog("daily", chunk.toString()));
-  currentRun.on("error", (error) => {
+  currentRun.on("error", async (error) => {
     appendLog("daily", `全渠道定时任务启动失败：${error.message || String(error)}`);
+    await recordSchedulerEvent({
+      status: "failed",
+      targetDate,
+      reason: error.message || String(error),
+      triggeredAt,
+      finishedAt: new Date().toISOString()
+    });
     currentRun = null;
     broadcastStatus();
   });
   currentRun.on("close", async (code) => {
-    appendLog("daily", `全渠道定时任务结束，退出码：${code}，结束时间：${formatTimestamp()}`);
+    const finishedAt = new Date();
+    appendLog("daily", `全渠道定时任务结束，退出码：${code}，结束时间：${formatTimestamp(finishedAt)}`);
+    await recordSchedulerEvent({
+      status: "finished",
+      targetDate,
+      exitCode: code,
+      triggeredAt,
+      finishedAt: finishedAt.toISOString()
+    });
     currentRun = null;
     broadcastStatus();
     broadcast({ type: "outputs", platform: "daily", files: await listOutputs("daily") });
   });
 
   broadcastStatus();
+}
+
+async function recordSchedulerEvent(event) {
+  try {
+    await recordSchedulerRun({ root: ROOT, event });
+  } catch (error) {
+    appendLog("daily", `记录定时状态失败：${error.message || String(error)}`);
+  }
 }
 
 function schedulerPayload() {

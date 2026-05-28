@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { classifyLogisticPolicy } from "./logistic-policy.mjs";
+
 export const STEP15_FILTER_STANDARD_VERSION = "douyin-content-filter-v2026-05-25";
 
 export const STEP15_FILTER_RULES = [
@@ -153,6 +155,22 @@ const RISK_WEIGHTS = {
   R11: 12,
   R12: 12
 };
+const CALIBRATION_FAILURE_SOURCES = new Set(["asset-error", "provider-error"]);
+const CALIBRATION_HIGH_RISK_PATTERNS = [
+  { code: "market-flow", label: "资金流/主力筛股", pattern: /(资金流|主力|净流入|净流出|大单|龙虎榜|选股模型|领涨个股|龙头强度)/u },
+  { code: "limit-up", label: "涨停复盘", pattern: /(涨停股?复盘|涨停潮|涨停板|涨停)/u },
+  { code: "concept-chain", label: "概念/产业链/龙头", pattern: /(概念股|游资)/u },
+  { code: "wealth-story", label: "财富收益叙事", pattern: /(万倍|暴富|普通人逆袭|稳赚|带你赚钱|收益翻倍|亏损补贴|交易员财富)/u },
+  { code: "provider-risk", label: "模型风险判断", pattern: /(明确|直接|存在具体|构成明确).{0,12}(隐性荐股|荐股|收益承诺|盈利诱导|交易指令|买卖指令|投资建议|夸大推广)/u }
+];
+const CALIBRATION_EVIDENCE_GAP_PATTERNS = [
+  /(素材抽取失败|模型筛选失败|API|接口|失败|缺少|不足|无法|不能确认|不确定|看不清|听不清|需结合|需人工|人工复核|信息有限|上下文)/u
+];
+const CALIBRATION_LOW_RISK_PATTERNS = [
+  /(泛财经|宏观|政策解读|科普|知识分享|社区经验|经验分享|交易心理|风险教育|客观资讯|客观表达|中性表达|工具使用|功能介绍|普通市场资讯|市场资讯)/u,
+  /(未见|未发现|无|没有|不含|不涉及).{0,20}(具体荐股|荐股|股票代码|个股推荐|收益承诺|盈利承诺|买卖指令|交易指令|交易建议|投资建议|开户|导流)/u,
+  /(不构成|不是).{0,12}(投资建议|交易建议|荐股)/u
+];
 
 export function resolveFilterConfig(env = process.env) {
   const provider = firstNonBlank(env.FILTER_PROVIDER, env.STEP15_FILTER_PROVIDER, env.CONTENT_FILTER_PROVIDER, "qwen")
@@ -267,6 +285,155 @@ export function applyBatchPassQuota(items = [], env = process.env) {
           : normalizeBriefReason(item.result.briefReason, "需要人工复核。")
       }
     };
+  });
+}
+
+export function calibrateStep15Decision(item = {}, options = {}) {
+  const preliminaryResult = normalizeQuotaResult(item.preliminaryResult || item.result);
+  const decisionSource = item.decisionSource || "";
+  if (CALIBRATION_FAILURE_SOURCES.has(decisionSource)) {
+    return calibrationEnvelope({
+      ...preliminaryResult,
+      status: "review",
+      briefReason: failureReviewBriefReason(item, preliminaryResult, decisionSource)
+    }, {
+      source: "calibrated-failure-review",
+      reason: "素材抽取或模型调用失败",
+      signals: detectCalibrationHighRiskSignals(item, preliminaryResult, { includeProviderText: true })
+    });
+  }
+
+  const logisticDecision = classifyLogisticPolicy(options.logisticModel, item);
+  if (logisticDecision && hasExplicitHardViolationInPrimaryText(item)) {
+    return calibrationEnvelope({
+      ...preliminaryResult,
+      status: "reject",
+      briefReason: normalizeBriefReason(preliminaryResult.briefReason, "标题或 tag 命中明确硬违规，不投放。")
+    }, {
+      source: "logistic-policy",
+      reason: "逻辑回归前置硬违规保护",
+      signals: logisticPolicySignals(logisticDecision)
+    });
+  }
+  if (logisticDecision) {
+    return calibrationEnvelope({
+      ...preliminaryResult,
+      status: logisticDecision.status,
+      briefReason: logisticPolicyBriefReason(item, preliminaryResult, logisticDecision)
+    }, {
+      source: "logistic-policy",
+      reason: "逻辑回归二分类校准",
+      signals: logisticPolicySignals(logisticDecision)
+    });
+  }
+
+  if (preliminaryResult.status === "pass") {
+    return calibrationEnvelope({
+      ...preliminaryResult,
+      status: "pass",
+      briefReason: normalizeBriefReason(preliminaryResult.briefReason, "未发现不投放风险。")
+    }, {
+      source: "calibrated-qwen-pass",
+      reason: "Qwen 初判 pass 且未命中本地硬拒",
+      signals: []
+    });
+  }
+
+  if (hasLowRiskPassEvidence(item, preliminaryResult)) {
+    return calibrationEnvelope({
+      status: "pass",
+      ruleIds: preliminaryResult.ruleIds,
+      briefReason: "低风险泛财经表达，未见具体荐股、收益承诺或交易指令。",
+      evidence: preliminaryResult.evidence
+    }, {
+      source: "calibrated-likely-pass",
+      reason: "Qwen review 但文本明确低风险",
+      signals: []
+    });
+  }
+
+  if (hasSoftLikelyPassEvidence(item, preliminaryResult)) {
+    return calibrationEnvelope({
+      status: "pass",
+      ruleIds: preliminaryResult.ruleIds,
+      briefReason: "软风险内容未见明确荐股、收益承诺或交易指令，按可能通过处理。",
+      evidence: preliminaryResult.evidence
+    }, {
+      source: "calibrated-soft-likely-pass",
+      reason: "仅命中软复核线索，未见具体交易导向",
+      signals: calibrationRuleSignals(item, preliminaryResult)
+    });
+  }
+
+  if (shouldRelaxNonNewsDecision(item, preliminaryResult)) {
+    return calibrationEnvelope({
+      status: "pass",
+      ruleIds: preliminaryResult.ruleIds,
+      briefReason: "非资讯内容未见明确硬违规，按宽松档通过处理。",
+      evidence: preliminaryResult.evidence
+    }, {
+      source: "calibrated-non-news-relaxed-pass",
+      reason: "非资讯内容类型宽松校准",
+      signals: calibrationRuleSignals(item, preliminaryResult)
+    });
+  }
+
+  const hardReject = hasHardReject(item, preliminaryResult);
+  if (hardReject || preliminaryResult.status === "reject") {
+    const result = {
+      ...preliminaryResult,
+      status: "reject",
+      briefReason: normalizeBriefReason(
+        preliminaryResult.briefReason,
+        hardReject ? "命中硬拒规则，不投放。" : "Qwen 判断高风险，不投放。"
+      )
+    };
+    return calibrationEnvelope(result, {
+      source: hardReject ? "calibrated-hard-reject" : "calibrated-qwen-reject",
+      reason: hardReject ? "本地硬拒或硬拒规则命中" : "Qwen 初判 reject",
+      signals: calibrationRuleSignals(item, preliminaryResult)
+    });
+  }
+
+  const highRiskSignals = detectCalibrationHighRiskSignals(item, preliminaryResult, {
+    includeProviderText: preliminaryResult.status !== "pass"
+  });
+  if (highRiskSignals.length > 0) {
+    return calibrationEnvelope({
+      status: "reject",
+      ruleIds: mergeRuleIds(preliminaryResult.ruleIds, highRiskSignals.map((signal) => signal.ruleId).filter(Boolean)),
+      briefReason: normalizeBriefReason(
+        `涉及${highRiskSignals.slice(0, 2).map((signal) => signal.label).join("、")}高风险信号，不投放。`,
+        "命中高风险信号，不投放。"
+      ),
+      evidence: [...preliminaryResult.evidence, ...highRiskSignals.map((signal) => signal.evidence).filter(Boolean)]
+    }, {
+      source: "calibrated-high-risk",
+      reason: "本地校准层识别高风险信号",
+      signals: highRiskSignals
+    });
+  }
+
+  if (hasEvidenceGap(item, preliminaryResult)) {
+    return calibrationEnvelope({
+      ...preliminaryResult,
+      status: "review",
+      briefReason: normalizeBriefReason(preliminaryResult.briefReason, "证据不足，需人工复核。")
+    }, {
+      source: "calibrated-evidence-gap",
+      reason: "上下文或素材证据不足",
+      signals: []
+    });
+  }
+
+  return calibrationEnvelope({
+    ...preliminaryResult,
+    status: "review",
+    briefReason: normalizeBriefReason(preliminaryResult.briefReason, "边界内容，需人工复核。")
+  }, {
+    source: "calibrated-boundary-review",
+    reason: "低风险和高风险证据不足以自动判定",
+    signals: calibrationRuleSignals(item, preliminaryResult)
   });
 }
 
@@ -732,17 +899,337 @@ function scoreFilterDecision({ result = {}, localRisks = [], decisionSource = ""
 function isQuotaEligible({ result, localRisks = [], decisionSource = "", riskScore, config }) {
   if (result.status === "reject") return false;
   if (["asset-error", "provider-error"].includes(decisionSource)) return false;
+  if (result.status !== "pass") return false;
   const ruleIds = new Set([...normalizeRuleIds(result.ruleIds || []), ...normalizeLocalSignals(localRisks).map((risk) => risk.ruleId)]);
   const isNews = ruleIds.has("P_INFO");
   if (config.strictness === "strict") {
-    return result.status === "pass" && riskScore <= 15;
+    return riskScore <= 15;
   }
   if (config.strictness === "loose") {
-    return result.status === "pass" || (!isNews && result.status === "review" && riskScore <= 75);
+    return true;
   }
-  if (isNews && result.status === "review") return false;
   if (isNews && (ruleIds.has("R10") || ruleIds.has("R12"))) return false;
-  return result.status === "pass" || (result.status === "review" && riskScore <= 70);
+  return true;
+}
+
+function calibrationEnvelope(result, calibration) {
+  const normalized = normalizeQuotaResult(result);
+  return {
+    result: normalized,
+    calibratedResult: normalized,
+    calibration: {
+      source: calibration.source || "calibrated",
+      reason: calibration.reason || "",
+      signals: Array.isArray(calibration.signals) ? calibration.signals : []
+    }
+  };
+}
+
+function logisticPolicySignals(decision = {}) {
+  return [
+    {
+      code: "probability",
+      label: "逻辑回归通过概率",
+      evidence: `${formatProbability(decision.probability)} / 阈值 ${formatProbability(decision.threshold)}`
+    }
+  ];
+}
+
+function formatProbability(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(3) : "0.000";
+}
+
+function logisticPolicyBriefReason(item = {}, result = {}, decision = {}) {
+  if (decision.status === "reject") return rejectBriefReason(item, result, decision);
+  return passBriefReason(item, result, decision);
+}
+
+function passBriefReason(item = {}, result = {}, decision = {}) {
+  const highRiskSignals = detectCalibrationHighRiskSignals(item, result, { includeProviderText: true });
+  const highRiskLabels = businessRiskLabels(highRiskSignals);
+  if (highRiskLabels.length > 0) {
+    return normalizeBriefReason(
+      `涉及${highRiskLabels.slice(0, 2).join("、")}，但未见具体荐股、收益承诺或买卖指令，按边界内容通过。`,
+      "未见明确荐股、收益承诺或交易指令，按低风险内容通过。"
+    );
+  }
+
+  const activeNames = new Set(decision.features?.activeNames || []);
+  if (activeNames.has("kw:社区互动")) {
+    return "社区互动或品牌表达，未见具体荐股、收益承诺或交易指令。";
+  }
+  if (activeNames.has("kw:低风险") || activeNames.has("kw:qwen低风险") || hasLowRiskPassEvidence(item, result)) {
+    return "低风险泛财经表达，未见具体荐股、收益承诺或交易指令。";
+  }
+  const contentType = fieldText(item.sourceRow?.fields?.["内容类型"]).trim();
+  if (contentType && contentType !== NEWS_CONTENT_TYPE) {
+    return "非资讯内容未见明确硬违规，未含具体荐股、收益承诺或买卖指令。";
+  }
+  return "未见明确荐股、收益承诺或交易指令，按低风险素材通过。";
+}
+
+function rejectBriefReason(item = {}, result = {}, decision = {}) {
+  if (hasExplicitHardViolationInPrimaryText(item)) {
+    return "标题或 tag 含具体标的、收益承诺或买卖指令，不投放。";
+  }
+  const highRiskSignals = detectCalibrationHighRiskSignals(item, result, { includeProviderText: true });
+  const highRiskLabels = businessRiskLabels(highRiskSignals);
+  if (highRiskLabels.length > 0) {
+    return normalizeBriefReason(
+      `涉及${highRiskLabels.slice(0, 2).join("、")}，容易形成投资建议或收益诱导，不投放。`,
+      "命中高风险投放信号，不投放。"
+    );
+  }
+
+  const activeNames = new Set(decision.features?.activeNames || []);
+  const titleRisk = titleRiskLabel(item, result);
+  if (titleRisk) {
+    if (titleRisk.startsWith("标题信息不足")) {
+      return `${titleRisk}，缺少可判断的投放安全信息，不投放。`;
+    }
+    return `标题涉及${titleRisk}，容易引发投资联想或收益诱导，不投放。`;
+  }
+  if (activeNames.has("kw:qwen风险")) {
+    return "模型判断存在荐股、收益承诺或交易指令风险，不投放。";
+  }
+  const contentType = fieldText(item.sourceRow?.fields?.["内容类型"]).trim();
+  if (contentType === NEWS_CONTENT_TYPE) {
+    return "资讯类内容缺少明确低风险证据，按历史低过审风险不投放。";
+  }
+  return "风险信号多于低风险证据，可能形成投资建议，不投放。";
+}
+
+function failureReviewBriefReason(item = {}, result = {}, decisionSource = "") {
+  if (decisionSource === "asset-error") {
+    return "素材抽取失败，缺少可判断的标题、画面或文本证据，需人工查看原视频。";
+  }
+  const highRiskSignals = detectCalibrationHighRiskSignals(item, result, { includeProviderText: true });
+  const highRiskLabels = businessRiskLabels(highRiskSignals);
+  const titleRisk = titleRiskLabel(item, result);
+  if (highRiskLabels.length > 0) {
+    return normalizeBriefReason(
+      `模型调用失败，且素材涉及${titleRisk || highRiskLabels.slice(0, 2).join("、")}，需人工确认是否可投放。`,
+      "模型调用失败，且素材存在风险线索，需人工复核。"
+    );
+  }
+  if (titleRisk) {
+    return `模型调用失败，标题涉及${titleRisk}，需人工确认是否可投放。`;
+  }
+  return "模型调用失败，无法完成内容判断，需人工复核。";
+}
+
+function businessRiskLabels(signals = []) {
+  const labels = [];
+  const add = (label) => {
+    if (label && !labels.includes(label)) labels.push(label);
+  };
+  for (const signal of signals) {
+    if (signal.code === "market-flow" || signal.ruleId === "R10") add("资金流/主力筛股");
+    else if (signal.code === "limit-up" || signal.ruleId === "R9") add("涨停或行情复盘");
+    else if (signal.code === "concept-chain" || signal.ruleId === "R11") add("概念股/产业链/龙头");
+    else if (signal.code === "wealth-story" || signal.ruleId === "R12") add("财富收益叙事");
+    else if (signal.code === "provider-risk") add("荐股或投资建议");
+  }
+  return labels;
+}
+
+function titleRiskLabel(item = {}, result = {}) {
+  const fields = item.sourceRow?.fields || {};
+  const rawTitle = [
+    fields["标题"],
+    item.assetBundle?.title,
+    item.title,
+    item.record?.title
+  ].find((value) => fieldText(value).trim());
+  const primaryTitle = fieldText(rawTitle || "")
+    .replace(/\s*#.*$/u, "")
+    .trim();
+  const text = [
+    fields["标题"],
+    item.title,
+    item.record?.title,
+    item.assetBundle?.title,
+    result.evidence?.join(" "),
+    result.briefReason
+  ].filter(Boolean).join("\n");
+  if (/(炒股必备|神器|工具|平台|富途|老虎|被查)/u.test(text)) return "投资工具或平台推广/监管信息";
+  if (/(期货|重仓|暴富)/u.test(text)) return "期货重仓或暴富叙事";
+  if (/(资金流|主力|净流入|净流出|大单|龙虎榜)/u.test(text)) return "资金流或主力动向";
+  if (/(涨停|复盘|行情回调)/u.test(text)) return "涨停或行情复盘";
+  if (/(产业链|概念股|概念|龙头|板块|赛道|机器人行业|科技企业|五巨头)/u.test(text)) return "概念板块或产业链";
+  if (/(财富曲线|财富自由|财务自由|万倍|逆袭|收益|亏损|身价|身家|富豪|首富|豪赚|变富|年薪|\\d+\\s*(?:万|亿).{0,10}\\d+\\s*(?:万|亿)|万亿美元)/u.test(text)) return "财富收益叙事";
+  if (/(股王|牛股|牛散|A股|股市|日经|韩股|暴涨|新高|投资大事件)/u.test(text)) return "市场行情或个股热度资讯";
+  if (/(破产|压垮|影视巨头|SK海力士|运营商|Token套餐|工装)/u.test(text)) return "公司事件或行业热点资讯";
+  if (/(一股不卖|持仓|仓位)/u.test(text)) return "持仓或交易暗示";
+  if (/(投资理财|投资铁律|投资大师|必看书|穷.*书|存银行|买黄金)/u.test(text)) return "理财或投资教育内容";
+  if (/(买入|卖出|加仓|减仓|止盈|止损|目标价|股票代码)/u.test(text)) return "具体交易指令或标的";
+  if (primaryTitle.length > 0 && primaryTitle.length <= 6) return "标题信息不足且内容类型历史低过审";
+  return "";
+}
+
+function shouldRelaxNonNewsDecision(item = {}, result = {}) {
+  const contentType = fieldText(item.sourceRow?.fields?.["内容类型"]).trim();
+  if (!contentType || contentType === NEWS_CONTENT_TYPE) return false;
+  if (contentType === "长视频" || contentType === "理财内容") return false;
+  if (hasExplicitHardViolationInPrimaryText(item)) return false;
+  if (CALIBRATION_FAILURE_SOURCES.has(item.decisionSource || "")) return false;
+  return result.status === "reject"
+    || result.status === "review"
+    || detectCalibrationHighRiskSignals(item, result, { includeProviderText: true }).length > 0;
+}
+
+function hasExplicitHardViolationInPrimaryText(item = {}) {
+  const fields = item.sourceRow?.fields || {};
+  const text = [
+    fields["标题"],
+    fields["tag词"],
+    fields["TAG词"],
+    item.assetBundle?.title
+  ].filter(Boolean).join("\n");
+  if (!text.trim()) return false;
+  return /\b(?:SH|SZ|BJ)?[036]\d{5}\b/iu.test(text)
+    || /[（(][036]\d{5}[）)]/u.test(text)
+    || /(股票代码|推荐股票|推荐个股|个股推荐|目标价|目标位)/u.test(text)
+    || /(稳赚|稳稳赚钱|带你赚钱|跟着.{0,12}赚|收益翻倍|保本|包赚|无风险|零风险|0风险|必涨|必跌)/u.test(text)
+    || /(现在|立即|马上|直接|赶紧|建议|跟着|可以|适合).{0,10}(买入|卖出|建仓|加仓|减仓|清仓|止盈|止损|抄底|逃顶|满仓|空仓)/u.test(text)
+    || /(股票配资|场外配资|私募|信托|P2P|校园贷|二元期权|石油沥青|虚拟货币|比特币|荐股软件|内幕消息|内幕交易|内部交易)/u.test(text);
+}
+
+function detectCalibrationHighRiskSignals(item = {}, result = {}, options = {}) {
+  const signals = [];
+  const materialText = calibrationMaterialText(item, result, options);
+  for (const pattern of CALIBRATION_HIGH_RISK_PATTERNS) {
+    const match = materialText.match(pattern.pattern);
+    if (!match) continue;
+    signals.push({
+      ruleId: calibrationRuleIdForPattern(pattern.code),
+      code: pattern.code,
+      label: pattern.label,
+      evidence: trimEvidence(match[0])
+    });
+  }
+
+  for (const signal of calibrationRuleSignals(item, result)) {
+    if (!signalIsHighRisk(signal)) continue;
+    signals.push(signal);
+  }
+  return dedupeCalibrationSignals(signals);
+}
+
+function calibrationMaterialText(item = {}, result = {}, options = {}) {
+  const fields = item.sourceRow?.fields || {};
+  const assetBundle = item.assetBundle || {};
+  return [
+    fields["标题"],
+    fields["tag词"],
+    fields["TAG词"],
+    assetBundle.sourceText,
+    assetBundle.text,
+    assetBundle.asrText,
+    assetBundle.ocrText,
+    options.includeProviderText ? result.evidence?.join(" ") : "",
+    options.includeProviderText ? result.briefReason : ""
+  ].filter(Boolean).join("\n");
+}
+
+function calibrationEvaluationText(item = {}, result = {}) {
+  const fields = item.sourceRow?.fields || {};
+  return [
+    fields["标题"],
+    fields["tag词"],
+    fields["TAG词"],
+    fields["内容类型"],
+    item.assetBundle?.sourceText,
+    item.assetBundle?.text,
+    item.assetBundle?.asrText,
+    item.assetBundle?.ocrText,
+    result.evidence?.join(" "),
+    result.briefReason
+  ].filter(Boolean).join("\n");
+}
+
+function calibrationRuleSignals(item = {}, result = {}) {
+  const localSignals = normalizeLocalSignals(item.localRisks || []).map((risk) => ({
+    ruleId: risk.ruleId,
+    code: risk.ruleId,
+    label: risk.label || risk.ruleId,
+    evidence: risk.evidence || ""
+  }));
+  const resultSignals = normalizeRuleIds(result.ruleIds || []).map((ruleId) => {
+    const rule = STEP15_FILTER_RULES.find((item) => item.ruleId === ruleId);
+    return {
+      ruleId,
+      code: ruleId,
+      label: rule?.label || ruleId,
+      evidence: ""
+    };
+  });
+  return dedupeCalibrationSignals([...localSignals, ...resultSignals]);
+}
+
+function signalIsHighRisk(signal = {}) {
+  const evidence = String(signal.evidence || "");
+  if (signal.ruleId === "R10") return evidence ? /(资金流|主力|净流入|净流出|大单|龙虎榜|选股模型|领涨个股|龙头强度)/u.test(evidence) : true;
+  if (signal.ruleId === "R9") return /(涨停|点位|加仓|减仓|抄底|突破|跌破|失守)/u.test(evidence);
+  if (signal.ruleId === "R11") return /(概念股|游资)/u.test(evidence);
+  if (signal.ruleId === "R12") return /(万倍|暴富|普通人逆袭|交易员财富|收益翻倍|稳赚|带你赚钱|亏损补贴)/u.test(evidence);
+  if (signal.ruleId === "R6" || signal.ruleId === "R7") return false;
+  return evidence ? CALIBRATION_HIGH_RISK_PATTERNS.some((pattern) => pattern.pattern.test(evidence)) : false;
+}
+
+function hasLowRiskPassEvidence(item = {}, result = {}) {
+  const text = calibrationEvaluationText(item, result);
+  if (hasEvidenceGap(item, result) && !CALIBRATION_LOW_RISK_PATTERNS.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+  return CALIBRATION_LOW_RISK_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasSoftLikelyPassEvidence(item = {}, result = {}) {
+  if (/(需要人工|人工确认|人工复核|需人工)/u.test(String(result.briefReason || ""))) return false;
+  const contentType = fieldText(item.sourceRow?.fields?.["内容类型"]).trim();
+  if (["资讯", "长视频", "盘点", "理财内容"].includes(contentType)) return false;
+  const localSignals = normalizeLocalSignals(item.localRisks || []);
+  if (!localSignals.length) return false;
+  const softRuleIds = new Set(["P_INFO", "P1", "P2", "R6", "R7", "R8", "R11", "R12"]);
+  if (!localSignals.every((signal) => softRuleIds.has(signal.ruleId))) return false;
+  const materialText = calibrationMaterialText(item, result, { includeProviderText: false });
+  if (/(股票代码|目标价|目标位|买入|卖出|建仓|加仓|减仓|清仓|止盈|止损|抄底|逃顶|涨停复盘|涨停股复盘|资金流|主力|净流入|净流出|龙虎榜|概念股|游资|万倍|暴富|稳赚|收益翻倍|带你赚钱)/u.test(materialText)) {
+    return false;
+  }
+  const evaluationText = calibrationEvaluationText(item, result);
+  return /(隐含|可能|需复核|理财|财富|财经|资讯|书籍|影视|知识|经验|故事|人物|产业链|供应商|龙头|身家|财富曲线|财富历程|存钱|投资)/u.test(evaluationText);
+}
+
+function hasEvidenceGap(item = {}, result = {}) {
+  const text = calibrationEvaluationText(item, result);
+  return CALIBRATION_EVIDENCE_GAP_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function calibrationRuleIdForPattern(code) {
+  if (code === "market-flow") return "R10";
+  if (code === "limit-up") return "R9";
+  if (code === "concept-chain") return "R11";
+  if (code === "wealth-story") return "R12";
+  if (code === "overclaim") return "R6";
+  return "";
+}
+
+function mergeRuleIds(...groups) {
+  return [...new Set(groups.flatMap((group) => normalizeRuleIds(group || [])))];
+}
+
+function dedupeCalibrationSignals(signals = []) {
+  const deduped = [];
+  const seen = new Set();
+  for (const signal of signals) {
+    const key = [signal.ruleId || "", signal.code || "", signal.label || "", signal.evidence || ""].join("\t");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(signal);
+  }
+  return deduped;
 }
 
 function hasHardReject(item = {}, result = {}) {
@@ -752,7 +1239,7 @@ function hasHardReject(item = {}, result = {}) {
   ]);
   return item.decisionSource === "local-reject"
     || normalizeLocalSignals(item.localRisks || []).some((risk) => risk.action === "reject")
-    || [...ruleIds].some((ruleId) => /^R[1-5]$/u.test(ruleId));
+    || (result.status === "reject" && [...ruleIds].some((ruleId) => /^R[1-5]$/u.test(ruleId)));
 }
 
 function accountRiskWeight(accountBaseline) {

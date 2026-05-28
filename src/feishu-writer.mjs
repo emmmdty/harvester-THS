@@ -32,6 +32,7 @@ export async function writePlatformJsonToFeishu({
   let total = 0;
   let created = 0;
   let skipped = 0;
+  let updated = 0;
 
   for (const date of enumerateDateStrings(sinceDate, untilDate)) {
     const dateItems = items.filter((item) => item.publishedAt === date);
@@ -44,6 +45,7 @@ export async function writePlatformJsonToFeishu({
     total += result.total;
     created += result.created;
     skipped += result.skipped;
+    updated += result.updated || 0;
     byDate.push({ date, collected: dateItems.length, ...result });
   }
   if (created > 0) {
@@ -56,6 +58,7 @@ export async function writePlatformJsonToFeishu({
       total,
       created,
       skipped,
+      updated,
       byDate,
       warnings
     }

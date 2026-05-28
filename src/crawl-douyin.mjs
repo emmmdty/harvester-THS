@@ -2,8 +2,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
-import { formatDate as formatDateInTimeZone, parsePublishedDateText } from "./date-utils.mjs";
-import { extractDouyinApiDetail, extractDouyinTagsFromSources, extractDouyinTitle } from "./douyin-detail-text.mjs";
+import { formatDate as formatDateInTimeZone } from "./date-utils.mjs";
+import {
+  extractDouyinApiDetail,
+  extractDouyinPublishedAtFromText,
+  extractDouyinTagDetailFromSources,
+  extractDouyinTitle,
+  isLowConfidenceDouyinTags,
+  mergeDouyinTagCandidates
+} from "./douyin-detail-text.mjs";
 import { douyinProfileIdsMatch, extractPrimaryDouyinAuthorProfileUrl } from "./douyin-profile-guard.mjs";
 import { classifyContentType } from "./content-classifier.mjs";
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
@@ -224,12 +231,16 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
       audit?.recordChecked();
 
       let detail = restoreDouyinDetailFromCache(await detailCache.get(link.id));
+      if (detail?.authorProfileUrl && !douyinProfileIdsMatch(profileUrl, detail.authorProfileUrl)) {
+        console.log(`抖音详情缓存作者与当前账号不一致，刷新详情：${accountName} ${link.exportUrl}`);
+        detail = null;
+      }
       if (detail) {
         audit?.recordCacheHit();
         console.log(`抖音详情缓存命中：${accountName} ${link.exportUrl}`);
       } else {
         await waitRandom(detailPage, DETAIL_GAP_DELAY, "详情页间隔");
-        detail = await scrapeItemDetail(detailPage, link.detailUrl, { resourceBlocker, copyShare }).catch((error) => {
+        detail = await scrapeItemDetail(detailPage, link.detailUrl, { resourceBlocker, copyShare, expectedProfileUrl: profileUrl }).catch((error) => {
           console.warn(`打开抖音作品失败，跳过：${link.exportUrl}`);
           console.warn(error.message || String(error));
           return { tags: "", publishedAt: null, itemUrl: link.exportUrl, failed: true };
@@ -349,36 +360,67 @@ async function getPublishedItems(page) {
   return [...byId.values()];
 }
 
-async function scrapeItemDetail(page, itemUrl, { resourceBlocker, copyShare = false } = {}) {
-  const detail = await scrapeItemDetailOnce(page, itemUrl, { copyShare });
+async function scrapeItemDetail(page, itemUrl, { resourceBlocker, copyShare = false, expectedProfileUrl = "" } = {}) {
+  const detail = await scrapeItemDetailOnce(page, itemUrl, { copyShare, expectedProfileUrl });
   if (shouldRetryDouyinDetailUnblocked(detail) && resourceBlocker?.enabled) {
     console.log("抖音详情页关键字段未读到，关闭轻量页面模式重试一次。");
-    return resourceBlocker.disableTemporarily(() => scrapeItemDetailOnce(page, itemUrl, { copyShare }));
+    return resourceBlocker.disableTemporarily(() => scrapeItemDetailOnce(page, itemUrl, { copyShare, expectedProfileUrl }));
   }
   return detail;
 }
 
-async function scrapeItemDetailOnce(page, itemUrl, { copyShare = false } = {}) {
+async function scrapeItemDetailOnce(page, itemUrl, { copyShare = false, expectedProfileUrl = "" } = {}) {
   const apiDetailPromise = waitForDouyinAwemeDetail(page, itemUrl);
   await page.goto(itemUrl, { waitUntil: "domcontentloaded" });
   await waitForDetailDateText(page);
   await waitRandom(page, DETAIL_READ_DELAY, "详情页停留");
-  const detail = await scrapeItemDetailFromPage(page);
+  const detail = await scrapeItemDetailFromPage(page, { expectedProfileUrl });
   const apiDetail = await apiDetailPromise;
+  const pageTags = detail.tags;
+  const pageTagsLowConfidence = detail.tagsLowConfidence;
   if (apiDetail) {
     detail.title = detail.title || apiDetail.title;
-    detail.tags = detail.tags || apiDetail.tags;
+    const mergedTags = mergeDouyinTagCandidates([
+      {
+        tags: apiDetail.tags,
+        priority: apiDetail.tagsFallback ? 0 : 30,
+        fallback: apiDetail.tagsFallback,
+        lowConfidence: apiDetail.tagsLowConfidence
+      },
+      {
+        tags: pageTags,
+        priority: 10,
+        lowConfidence: pageTagsLowConfidence
+      }
+    ]);
+    detail.tags = mergedTags.tags;
+    detail.tagsLowConfidence = mergedTags.lowConfidence;
     detail.publishedAt = apiDetail.publishedAt || detail.publishedAt;
     detail.authorProfileUrl = apiDetail.authorProfileUrl || detail.authorProfileUrl;
   }
   detail.itemUrl = normalizeClickedItemUrl(page.url()) || itemUrl;
-  detail.shareText = (copyShare || !detail.tags) ? await tryReadShareText(page) : "";
-  if (!detail.tags && detail.shareText) {
-    detail.tags = extractDouyinTagsFromSources({
-      itemText: detail.itemText,
-      titleText: detail.titleText,
-      shareText: detail.shareText
-    });
+  detail.shareText = (copyShare || !detail.tags || detail.tagsLowConfidence || isLowConfidenceDouyinTags(detail.tags)) ? await tryReadShareText(page) : "";
+  if (detail.shareText) {
+    const mergedTags = mergeDouyinTagCandidates([
+      {
+        tags: apiDetail?.tags || "",
+        priority: apiDetail?.tagsFallback ? 0 : 30,
+        fallback: apiDetail?.tagsFallback,
+        lowConfidence: apiDetail?.tagsLowConfidence
+      },
+      {
+        tags: detail.shareText,
+        priority: 20,
+        lowConfidence: isLowConfidenceDouyinTags(detail.shareText)
+      },
+      {
+        tags: pageTags,
+        priority: 10,
+        lowConfidence: pageTagsLowConfidence
+      }
+    ]);
+    detail.tags = mergedTags.tags;
+    detail.tagsLowConfidence = mergedTags.lowConfidence;
   }
   detail.title = detail.title || extractDouyinTitle({
     itemText: detail.itemText,
@@ -407,7 +449,7 @@ function waitForDouyinAwemeDetail(page, itemUrl) {
     .catch(() => null);
 }
 
-async function scrapeItemDetailFromPage(page) {
+async function scrapeItemDetailFromPage(page, { expectedProfileUrl = "" } = {}) {
   const bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
   if (/登录后查看更多|扫码登录|验证码登录|手机号登录|请登录|登录后查看/.test(bodyText)) {
     throw new Error("抖音详情页需要重新登录。");
@@ -416,13 +458,14 @@ async function scrapeItemDetailFromPage(page) {
   const itemText = await readCurrentItemText(page);
   const titleText = await page.title().catch(() => "");
   const dateSourceText = itemText || bodyText;
-  const tags = extractDouyinTagsFromSources({ itemText, titleText });
+  const tagDetail = extractDouyinTagDetailFromSources({ itemText, titleText });
   const title = extractDouyinTitle({ itemText, titleText });
-  const publishedAt = extractPublishedAtFromText(dateSourceText);
-  const authorProfileUrl = await readPrimaryAuthorProfileUrl(page);
+  const publishedAt = extractDouyinPublishedAtFromText(dateSourceText, formatDate(REFERENCE_DATE));
+  const authorProfileUrl = await readPrimaryAuthorProfileUrl(page, { expectedProfileUrl });
   return {
     title,
-    tags,
+    tags: tagDetail.tags,
+    tagsLowConfidence: tagDetail.lowConfidence,
     publishedAt,
     authorProfileUrl,
     itemText,
@@ -431,11 +474,11 @@ async function scrapeItemDetailFromPage(page) {
   };
 }
 
-async function readPrimaryAuthorProfileUrl(page) {
+async function readPrimaryAuthorProfileUrl(page, { expectedProfileUrl = "" } = {}) {
   const hrefs = await page.locator("a[href]").evaluateAll((anchors) => {
     return anchors.map((anchor) => anchor.href || "").filter(Boolean);
   }).catch(() => []);
-  return extractPrimaryDouyinAuthorProfileUrl(hrefs);
+  return extractPrimaryDouyinAuthorProfileUrl(hrefs, { preferredProfileUrl: expectedProfileUrl });
 }
 
 async function waitForDetailDateText(page) {
@@ -537,33 +580,6 @@ async function isLoginRequired(page) {
   return false;
 }
 
-function extractPublishedAtFromText(text) {
-  const normalized = text.replace(/\u00a0/g, " ");
-  const directPatterns = [
-    /发布时间[:：]?\s*(20\d{2})[./-](\d{1,2})[./-](\d{1,2})/,
-    /发布于[:：]?\s*(20\d{2})[./-](\d{1,2})[./-](\d{1,2})/,
-    /(\d{4})年(\d{1,2})月(\d{1,2})日/
-  ];
-
-  for (const pattern of directPatterns) {
-    const match = normalized.match(pattern);
-    if (match) return parseDateOnly(`${match[1]}-${pad(match[2])}-${pad(match[3])}`);
-  }
-
-  const lines = normalized
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    if (line.length > 80) continue;
-    const date = parsePublishedAt(line);
-    if (date) return date;
-  }
-
-  return parsePublishedAt(normalized);
-}
-
 function extractDateCandidateLines(text) {
   const lines = String(text || "")
     .replace(/\u00a0/g, " ")
@@ -576,11 +592,6 @@ function extractDateCandidateLines(text) {
     });
 
   return lines.slice(0, 8).join(" | ");
-}
-
-function parsePublishedAt(text) {
-  const dateString = parsePublishedDateText(text, formatDate(REFERENCE_DATE));
-  return dateString ? parseDateOnly(dateString) : null;
 }
 
 async function writeOutputs(rows, { audit = null, mode = "conservative" } = {}) {
@@ -836,6 +847,7 @@ function randomBetween(min, max) {
 function restoreDouyinDetailFromCache(cached) {
   if (!cached) return null;
   if (cached.cacheVersion !== DOUYIN_DETAIL_CACHE_VERSION) return null;
+  if (isLowConfidenceDouyinTags(cached.tags || "")) return null;
   return {
     tags: cached.tags || "",
     publishedAt: cached.publishedAt ? parseDateOnly(cached.publishedAt) : null,
@@ -863,7 +875,7 @@ function serializeDouyinDetailForCache(detail) {
 }
 
 function isCacheableDouyinDetail(detail) {
-  return Boolean(detail && !detail.failed && detail.publishedAt && detail.authorProfileUrl);
+  return Boolean(detail && !detail.failed && detail.publishedAt && detail.authorProfileUrl && !isLowConfidenceDouyinTags(detail.tags || ""));
 }
 
 function shouldRetryDouyinDetailUnblocked(detail) {

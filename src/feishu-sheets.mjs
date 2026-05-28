@@ -1,11 +1,15 @@
 import {
   buildDailySheetRecords,
   filterNewDailySheetRecords,
+  mapDailyRecordToFeishuFields,
   mapDailyRecordToSheetRow,
+  materialKeyFromFields,
+  materialKeyFromRecord,
   PLATFORM_DROPDOWN_COLUMNS,
   PLATFORM_HEADERS,
   PLATFORM_LEGACY_HEADERS,
-  PLATFORM_SHEET_LAYOUTS
+  PLATFORM_SHEET_LAYOUTS,
+  rowToFields
 } from "./daily-records.mjs";
 import { compareDateStrings, parseDateStringParts, pad } from "./date-utils.mjs";
 
@@ -81,6 +85,7 @@ export async function writeDailyPlatformRecords({ platformId, targetDate, items,
   const dataStartRow = dataStartRowFor(client, platformId);
   const existingDateBlocks = dateBlocksFromExistingRows(platformId, targetDate, existingRows, dataStartRow);
   const separatorRows = separatorRowNumbersFromDateBlocks(existingDateBlocks, targetDate);
+  let updatedRecords = 0;
   let wroteRecords = false;
   if (newRecords.length > 0) {
     const startInsertRow = insertRowForNewRecords(existingDateBlocks, newRecords, existingRows, targetDate, dataStartRow);
@@ -93,6 +98,13 @@ export async function writeDailyPlatformRecords({ platformId, targetDate, items,
     const startRow = startRowFromWriteResult(writeResult);
     separatorRows.push(...separatorRowNumbersFromNewRecords(newRecords, startRow));
   }
+  updatedRecords = await refreshExistingDailySheetRecordFields({
+    platformId,
+    records,
+    existingRows,
+    client,
+    dataStartRow
+  });
   const rowsAfterWrite = wroteRecords ? await client.readRows(platformId) : existingRows;
   const rowsAfterWriteDataStartRow = dataStartRowFor(client, platformId);
   await renumberTargetDateBatch(platformId, targetDate, client, rowsAfterWrite, rowsAfterWriteDataStartRow);
@@ -104,7 +116,8 @@ export async function writeDailyPlatformRecords({ platformId, targetDate, items,
   return {
     total: records.length,
     created: newRecords.length,
-    skipped: records.length - newRecords.length
+    skipped: records.length - newRecords.length,
+    updated: updatedRecords
   };
 }
 
@@ -114,6 +127,8 @@ export class FeishuSheetsClient {
     this.fetch = options.fetch || globalThis.fetch;
     this.tenantAccessToken = options.tenantAccessToken || "";
     this.detectedSheetLayouts = {};
+    this.maxRetries = Number.isFinite(Number(options.maxRetries)) ? Number(options.maxRetries) : 6;
+    this.retryDelayMs = Number.isFinite(Number(options.retryDelayMs)) ? Number(options.retryDelayMs) : 1200;
   }
 
   async getTenantAccessToken() {
@@ -476,17 +491,25 @@ export class FeishuSheetsClient {
   }
 
   async requestJson(path, options = {}) {
-    const payload = await this.requestRaw(path, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        ...(options.headers || {})
-      }
-    });
-    if (payload.code !== 0) {
+    let lastPayload = null;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      const payload = await this.requestRaw(path, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          ...(options.headers || {})
+        }
+      });
+      if (payload.code === 0) return payload.data || {};
+      lastPayload = payload;
+      if (!isFeishuRateLimitPayload(payload) || attempt >= this.maxRetries) break;
+      await sleep(retryDelayForAttempt(this.retryDelayMs, attempt));
+    }
+    if (lastPayload) {
+      const payload = lastPayload;
       throw new Error(formatFeishuApiError(payload, path, options));
     }
-    return payload.data || {};
+    throw new Error("飞书 API 调用失败：未返回响应。");
   }
 
   async requestRaw(path, options = {}) {
@@ -504,6 +527,20 @@ export class FeishuSheetsClient {
     }
     return payload;
   }
+}
+
+function isFeishuRateLimitPayload(payload) {
+  const text = `${payload?.code || ""} ${payload?.msg || ""} ${payload?.message || ""}`.toLowerCase();
+  return text.includes("too many request") || text.includes("rate limit") || text.includes("too many requests");
+}
+
+function retryDelayForAttempt(baseDelayMs, attempt) {
+  const base = Math.max(0, Number(baseDelayMs) || 0);
+  return Math.min(15000, base * (2 ** attempt));
+}
+
+function sleep(ms) {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
 function columnName(index) {
@@ -566,6 +603,57 @@ function separatorRowNumbersFromDateBlocks(dateBlocks, targetDate) {
 function allSeparatorRowNumbersFromRows(platformId, targetDate, rows, dataStartRow = 2) {
   return dateBlocksFromExistingRows(platformId, targetDate, rows, dataStartRow)
     .map((block) => block.startRow);
+}
+
+async function refreshExistingDailySheetRecordFields({
+  platformId,
+  records,
+  existingRows,
+  client,
+  dataStartRow = 2
+}) {
+  if (platformId !== "douyin") return 0;
+  if (typeof client?.writeRows !== "function" || typeof client?.sheetId !== "function") return 0;
+
+  const recordsByKey = new Map();
+  for (const record of records || []) {
+    if (record?.kind !== "material") continue;
+    const key = materialKeyFromRecord(platformId, record);
+    if (key) recordsByKey.set(key, record);
+  }
+  if (recordsByKey.size === 0) return 0;
+
+  const titleColumn = PLATFORM_HEADERS[platformId].indexOf("标题") + 1;
+  const tagsColumn = PLATFORM_HEADERS[platformId].indexOf("tag词") + 1;
+  const titleColumnName = columnName(titleColumn);
+  const tagsColumnName = columnName(tagsColumn);
+  let updated = 0;
+
+  for (let index = 0; index < (existingRows || []).length; index += 1) {
+    const existing = existingRows[index];
+    const fields = Array.isArray(existing)
+      ? rowToFields(platformId, existing)
+      : existing?.fields || existing || {};
+    const key = materialKeyFromFields(platformId, fields);
+    if (!key || !recordsByKey.has(key)) continue;
+
+    const nextFields = mapDailyRecordToFeishuFields(platformId, recordsByKey.get(key));
+    const currentTitle = cellText(fields["标题"]);
+    const currentTags = cellText(fields["tag词"]);
+    const nextTitle = nextFields["标题"] || currentTitle;
+    const nextTags = nextFields["tag词"] || currentTags;
+    if (nextTitle === currentTitle && nextTags === currentTags) continue;
+
+    const rowNumber = index + dataStartRow;
+    await client.writeRows(
+      platformId,
+      `${client.sheetId(platformId)}!${titleColumnName}${rowNumber}:${tagsColumnName}${rowNumber}`,
+      [[nextTitle, nextTags]]
+    );
+    updated += 1;
+  }
+
+  return updated;
 }
 
 function uniqueRowNumbers(rowNumbers) {

@@ -29,6 +29,17 @@ test("extractPrimaryDouyinAuthorProfileUrl picks the detail page author before r
   ]), authorProfile);
 });
 
+test("extractPrimaryDouyinAuthorProfileUrl prefers the configured profile when recommendation links appear first", () => {
+  const recommendationProfile = "https://www.douyin.com/user/MS4wLjABAAAAXplgX51xuWvuNjyxXs3bkTzBH_PEEFPEq3htEtuMmiUMIcERB6-W4E963MKSD1kv";
+  const authorProfile = "https://www.douyin.com/user/MS4wLjABAAAArf6v6Z48Pma-bIrz00wVCu76ioePN0vKzHAM_w9DN8AOkLekEk13Ay8_L-74BBB8";
+
+  assert.equal(extractPrimaryDouyinAuthorProfileUrl([
+    "https://www.douyin.com/user/self?from_nav=1",
+    recommendationProfile,
+    authorProfile
+  ], { preferredProfileUrl: authorProfile }), authorProfile);
+});
+
 test("douyinProfileIdsMatch rejects a video owned by a different account", () => {
   const expected = "https://www.douyin.com/user/MS4wLjABAAAAxr3bk2-4lsUB0XOErXDXFKIocqd2wOExCTAuRwQ19Vg";
   const actual = "https://www.douyin.com/user/MS4wLjABAAAAc9QKN60AuFgH9jNHD6m_Ufnw2CWZ_rnb9TkmLhEzKdY";

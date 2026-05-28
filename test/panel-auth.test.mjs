@@ -8,17 +8,11 @@ import {
   validatePostOrigin
 } from "../src/panel-auth.mjs";
 
-test("shared LAN host requires PANEL_PASSWORD before the server starts", () => {
+test("shared LAN host can run without PANEL_PASSWORD", () => {
   assert.doesNotThrow(() => assertPanelPasswordConfig({ host: "127.0.0.1", panelPassword: "" }));
   assert.doesNotThrow(() => assertPanelPasswordConfig({ host: "0.0.0.0", panelPassword: "team-secret" }));
-  assert.throws(
-    () => assertPanelPasswordConfig({ host: "0.0.0.0", panelPassword: "" }),
-    /PANEL_PASSWORD/
-  );
-  assert.throws(
-    () => assertPanelPasswordConfig({ host: "::", panelPassword: "" }),
-    /PANEL_PASSWORD/
-  );
+  assert.doesNotThrow(() => assertPanelPasswordConfig({ host: "0.0.0.0", panelPassword: "" }));
+  assert.doesNotThrow(() => assertPanelPasswordConfig({ host: "::", panelPassword: "" }));
 });
 
 test("panel auth rejects missing and wrong passwords and returns an HttpOnly session cookie for the right password", () => {

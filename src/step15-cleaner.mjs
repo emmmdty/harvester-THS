@@ -7,12 +7,14 @@ import {
   buildFeishuUrlCell,
   extractFeishuCellLink
 } from "./daily-records.mjs";
-import { formatDisplayDate } from "./date-utils.mjs";
+import { formatBatchTitle, formatDate, formatDisplayDate, pad } from "./date-utils.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
+import { loadLogisticPolicyModel } from "./logistic-policy.mjs";
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
 import { createDouyinAssetBundle } from "./step15-douyin-assets.mjs";
 import {
   applyBatchPassQuota,
+  calibrateStep15Decision,
   detectHistoricalFilterPriors,
   detectLocalFilterSignals,
   filterWithConfiguredProvider,
@@ -55,6 +57,7 @@ export async function cleanDailyStep15({
   };
   const filteredRows = [];
   const details = [];
+  const logisticModel = await loadLogisticPolicyModel(env, root);
 
   for (const platformId of platforms) {
     const rows = await writer.readRows(platformId);
@@ -68,6 +71,7 @@ export async function cleanDailyStep15({
         client: writer,
         extractDouyinAsset,
         filterWithProvider,
+        logisticModel,
         env,
         fetch
       });
@@ -131,6 +135,7 @@ async function processDouyinRows({
   client,
   extractDouyinAsset,
   filterWithProvider,
+  logisticModel = null,
   env,
   fetch
 }) {
@@ -200,7 +205,8 @@ async function processDouyinRows({
   const quotaDecisions = applyBatchPassQuota(decisions, env);
   for (const decision of quotaDecisions) {
     const { sourceRow, assetBundle } = decision;
-    const normalized = normalizeFilterResult(decision.result);
+    const calibrated = calibrateStep15Decision(decision, { logisticModel });
+    const normalized = normalizeFilterResult(calibrated.result);
     summary[normalized.status] += 1;
     const feedbackRow = feedbackRowForResult(normalized, assetBundle.assetDir);
     feedback.push({ sourceRowNumber: sourceRow.sourceRowNumber, row: feedbackRow });
@@ -216,6 +222,8 @@ async function processDouyinRows({
       assetDir: assetBundle.assetDir,
       result: normalized,
       preliminaryResult: decision.preliminaryResult,
+      calibratedResult: normalized,
+      calibration: calibrated.calibration,
       localRisks: decision.localRisks,
       quota: decision.quota
     });
@@ -250,11 +258,33 @@ async function replaceFilteredRowsForTargetDate(client, targetDate, newRows) {
     : [];
   const existingBody = existingRowsWithoutHeader(existing, client, STEP15_SHEET_KEY)
     .filter((row) => row.some((cell) => cellText(cell).trim()))
-    .filter((row) => !dateMatches(cellText(row[STEP15_DATE_COLUMN_INDEX]), formatDisplayDate(targetDate), targetDate));
-  const rows = sortFilteredRows([...existingBody, ...newRows]);
+    .filter((row) => !rowMatchesTargetDate(row, targetDate));
+  const rows = buildRowsWithDateSeparators([...existingBody, ...newRows]);
+  await writeFilteredRows(client, rows);
+}
+
+export async function rebuildStep15FilteredSeparators({ client = null, env = process.env } = {}) {
+  const writer = client || new FeishuSheetsClient(loadStep15FeishuConfig(env));
+  const existing = typeof writer.readSheetRows === "function"
+    ? await writer.readSheetRows(STEP15_SHEET_KEY, STEP15_FILTERED_HEADERS.length)
+    : [];
+  const existingBody = existingRowsWithoutHeader(existing, writer, STEP15_SHEET_KEY)
+    .filter((row) => row.some((cell) => cellText(cell).trim()))
+    .filter((row) => !isFilteredSeparatorRow(row));
+  const rows = buildRowsWithDateSeparators(existingBody);
+  await writeFilteredRows(writer, rows);
+  return {
+    totalRows: rows.length,
+    separatorRows: rows.filter(isFilteredSeparatorRow).length,
+    materialRows: rows.filter((row) => row.some((cell) => cellText(cell).trim()) && !isFilteredSeparatorRow(row)).length
+  };
+}
+
+async function writeFilteredRows(client, rows) {
   if (typeof client.replaceSheetDataRows === "function") {
     await writeFilteredHeader(client);
     await client.replaceSheetDataRows(STEP15_SHEET_KEY, rows, STEP15_FILTERED_HEADERS.length);
+    await applyFilteredRowStyles(client, rows, dataStartRowFor(client, STEP15_SHEET_KEY));
     return;
   }
   const legacyRows = [
@@ -263,6 +293,7 @@ async function replaceFilteredRowsForTargetDate(client, targetDate, newRows) {
   ];
   if (typeof client.replaceSheetRows === "function") {
     await client.replaceSheetRows(STEP15_SHEET_KEY, legacyRows, STEP15_FILTERED_HEADERS.length);
+    await applyFilteredRowStyles(client, rows, dataStartRowFor(client, STEP15_SHEET_KEY));
     return;
   }
   const sheetId = client.sheetId(STEP15_SHEET_KEY);
@@ -271,6 +302,7 @@ async function replaceFilteredRowsForTargetDate(client, targetDate, newRows) {
     `${sheetId}!A1:J${legacyRows.length}`,
     legacyRows
   );
+  await applyFilteredRowStyles(client, rows, 2);
 }
 
 async function writeFilteredHeader(client) {
@@ -330,19 +362,96 @@ function existingRowsWithoutHeader(rows, client = null, sheetKey = STEP15_SHEET_
   return hasHeader ? rows.slice(1) : rows;
 }
 
-function sortFilteredRows(rows) {
-  return rows.sort((left, right) => {
-    return dateSortKey(right[STEP15_DATE_COLUMN_INDEX]).localeCompare(dateSortKey(left[STEP15_DATE_COLUMN_INDEX]));
-  });
+function buildRowsWithDateSeparators(rows) {
+  const grouped = new Map();
+  const undatedRows = [];
+  for (const row of rows) {
+    if (!row.some((cell) => cellText(cell).trim()) || isFilteredSeparatorRow(row)) continue;
+    const rowDate = normalizedDateFromCell(row[STEP15_DATE_COLUMN_INDEX]);
+    if (!rowDate) {
+      undatedRows.push(normalizeRowWidth(row));
+      continue;
+    }
+    if (!grouped.has(rowDate)) grouped.set(rowDate, []);
+    grouped.get(rowDate).push(normalizeRowWidth(row));
+  }
+
+  return [
+    ...[...grouped.entries()]
+      .sort(([left], [right]) => right.localeCompare(left))
+      .flatMap(([date, dateRows]) => [filteredSeparatorRow(date), ...dateRows]),
+    ...undatedRows
+  ];
 }
 
-function dateSortKey(value) {
-  const text = cellText(value);
-  const full = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
-  if (full) return `${full[1]}-${full[2].padStart(2, "0")}-${full[3].padStart(2, "0")}`;
-  const display = text.match(/^(\d{1,2})\s+(\d{1,2})$/);
-  if (display) return `9999-${display[1].padStart(2, "0")}-${display[2].padStart(2, "0")}`;
-  return text;
+function filteredSeparatorRow(date) {
+  const row = Array.from({ length: STEP15_FILTERED_HEADERS.length }, () => "");
+  row[STEP15_DATE_COLUMN_INDEX] = formatBatchTitle(date);
+  return row;
+}
+
+function isFilteredSeparatorRow(row) {
+  return /^(\d{2})(\d{2})\s+投稿视频$/u.test(cellText(row?.[STEP15_DATE_COLUMN_INDEX]).trim());
+}
+
+function rowMatchesTargetDate(row, targetDate) {
+  return normalizedDateFromCell(row?.[STEP15_DATE_COLUMN_INDEX]) === targetDate;
+}
+
+function normalizedDateFromCell(value) {
+  const text = cellText(value).trim();
+  const full = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/u);
+  if (full) return `${full[1]}-${pad(full[2])}-${pad(full[3])}`;
+  const display = text.match(/^(\d{1,2})\s+(\d{1,2})$/u);
+  if (display) return `${currentYear()}-${pad(display[1])}-${pad(display[2])}`;
+  const batch = text.match(/^(\d{2})(\d{2})\s+投稿视频$/u);
+  if (batch) return `${currentYear()}-${batch[1]}-${batch[2]}`;
+  return "";
+}
+
+function currentYear() {
+  return formatDate(new Date()).slice(0, 4);
+}
+
+function normalizeRowWidth(row = []) {
+  return Array.from({ length: STEP15_FILTERED_HEADERS.length }, (_, index) => row[index] || "");
+}
+
+async function applyFilteredRowStyles(client, rows, dataStartRow) {
+  const separatorRowNumbers = [];
+  const materialRowNumbers = [];
+  rows.forEach((row, index) => {
+    const rowNumber = dataStartRow + index;
+    if (isFilteredSeparatorRow(row)) {
+      separatorRowNumbers.push(rowNumber);
+    } else if (row.some((cell) => cellText(cell).trim())) {
+      materialRowNumbers.push(rowNumber);
+    }
+  });
+
+  if (typeof client.clearMaterialRowHighlights === "function" && materialRowNumbers.length > 0) {
+    await client.clearMaterialRowHighlights(STEP15_SHEET_KEY, rowRangesFromRowNumbers(materialRowNumbers));
+  }
+  if (typeof client.highlightSeparatorRows === "function" && separatorRowNumbers.length > 0) {
+    await client.highlightSeparatorRows(STEP15_SHEET_KEY, separatorRowNumbers);
+  }
+}
+
+function rowRangesFromRowNumbers(rowNumbers) {
+  const sortedRows = [...new Set(rowNumbers)]
+    .map((rowNumber) => Number(rowNumber))
+    .filter((rowNumber) => Number.isInteger(rowNumber) && rowNumber > 0)
+    .sort((left, right) => left - right);
+  const ranges = [];
+  for (const rowNumber of sortedRows) {
+    const previous = ranges.at(-1);
+    if (previous && previous.endRow + 1 === rowNumber) {
+      previous.endRow = rowNumber;
+    } else {
+      ranges.push({ startRow: rowNumber, endRow: rowNumber });
+    }
+  }
+  return ranges;
 }
 
 function dateMatches(value, displayDate, targetDate) {

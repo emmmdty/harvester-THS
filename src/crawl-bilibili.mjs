@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { extractBilibiliTags, extractBilibiliTitle } from "./bilibili-detail-text.mjs";
 import { compareDateStrings, formatDate, normalizeDateInput } from "./date-utils.mjs";
+import { dateFromBilibiliEpoch, resolveBilibiliPublishedAt } from "./bilibili-published-date.mjs";
 import { extractBilibiliBv, normalizeBilibiliVideoUrl } from "./link-utils.mjs";
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
 import {
@@ -29,6 +31,7 @@ const OLD_ITEM_STOP_AFTER = Number(process.env.BILIBILI_OLD_ITEM_STOP_AFTER || 4
 const SCROLL_DELAY = parseDelayRange(process.env.BILIBILI_SCROLL_DELAY || "1200-2500");
 const DETAIL_GAP_DELAY = parseDelayRange(process.env.BILIBILI_DETAIL_GAP_DELAY || "800-1800");
 const HEADLESS = resolveHeadless();
+const BILIBILI_DETAIL_CACHE_VERSION = 3;
 
 const ACCOUNT = {
   name: "同花顺投资",
@@ -158,21 +161,25 @@ async function crawlAccountRecentFirst({ listPage, detailPage, account, audit, d
       checked += 1;
       audit?.recordChecked();
 
-      let detail = link.publishedAt ? link : restoreBilibiliDetailFromCache(await detailCache.get(link.bvid));
-      if (!link.publishedAt && detail) {
+      let detail = restoreBilibiliDetailFromCache(await detailCache.get(link.bvid));
+      if (detail) {
         audit?.recordCacheHit();
         console.log(`B站详情缓存命中：${account.name} ${link.videoUrl}`);
       }
+      if (!detail && link.publishedAt && link.title && link.tags) detail = link;
       if (!detail) {
         await waitRandom(detailPage, DETAIL_GAP_DELAY, "B站详情页间隔");
         detail = await scrapeVideoDetail(detailPage, link.videoUrl, { resourceBlocker }).catch((error) => {
           console.warn(`打开B站视频失败，跳过：${link.videoUrl}`);
           console.warn(error.message || String(error));
-          return { ...link, publishedAt: "" };
+          return { ...link, publishedAt: link.publishedAt || "" };
         });
+        detail = mergeBilibiliDetail(link, detail);
         if (isCacheableBilibiliDetail(detail)) {
           await detailCache.set(link.bvid, serializeBilibiliDetailForCache(detail));
         }
+      } else {
+        detail = mergeBilibiliDetail(link, detail);
       }
 
       if (!detail.publishedAt) {
@@ -204,7 +211,9 @@ async function crawlAccountRecentFirst({ listPage, detailPage, account, audit, d
         accountName: account.name,
         publishedAt: detail.publishedAt,
         videoUrl: detail.videoUrl || link.videoUrl,
-        bvid: detail.bvid || link.bvid
+        bvid: detail.bvid || link.bvid,
+        title: detail.title || "",
+        tags: detail.tags || ""
       });
       console.log(`B站命中：${account.name} ${detail.publishedAt} ${detail.videoUrl || link.videoUrl}`);
     }
@@ -237,17 +246,22 @@ async function getVideoCandidatesWithFallback(listPage, apiVideos, { resourceBlo
 
 async function getVideoCandidates(page, apiVideos) {
   const domLinks = await page.locator('a[href*="/video/BV"]').evaluateAll((anchors) => {
-    return anchors.map((anchor) => anchor.href);
+    return anchors.map((anchor) => ({
+      href: anchor.href,
+      title: anchor.getAttribute("title") || anchor.getAttribute("aria-label") || anchor.textContent || ""
+    }));
   }).catch(() => []);
 
   const byBvid = new Map(apiVideos);
-  for (const href of domLinks) {
-    const bvid = extractBilibiliBv(href);
+  for (const item of domLinks) {
+    const bvid = extractBilibiliBv(item.href);
     if (!bvid || byBvid.has(bvid)) continue;
     byBvid.set(bvid, {
       bvid,
-      videoUrl: normalizeBilibiliVideoUrl(href),
-      publishedAt: ""
+      videoUrl: normalizeBilibiliVideoUrl(item.href),
+      publishedAt: "",
+      title: extractBilibiliTitle({ videoData: { title: item.title } }),
+      tags: ""
     });
   }
 
@@ -272,19 +286,42 @@ async function scrapeVideoDetailOnce(page, videoUrl) {
   const detail = await page.evaluate(() => {
     const initial = window.__INITIAL_STATE__ || {};
     const videoData = initial.videoData || initial.aidData || {};
+    const metaKeywords = document.querySelector('meta[name="keywords"]')?.getAttribute("content") || "";
     return {
       pubdate: videoData.pubdate || videoData.ctime || 0,
       bvid: videoData.bvid || "",
+      videoData: {
+        title: videoData.title || "",
+        titleText: videoData.titleText || "",
+        tag: videoData.tag || [],
+        tags: videoData.tags || [],
+        keywords: videoData.keywords || ""
+      },
+      initialTags: initial.tags || [],
+      metaKeywords,
+      documentTitle: document.title || "",
       text: document.body?.innerText || ""
     };
-  }).catch(() => ({ pubdate: 0, bvid: "", text: "" }));
+  }).catch(() => ({ pubdate: 0, bvid: "", videoData: {}, initialTags: [], metaKeywords: "", documentTitle: "", text: "" }));
 
   const bvid = detail.bvid || extractBilibiliBv(page.url()) || extractBilibiliBv(videoUrl);
-  const publishedAt = dateFromEpoch(detail.pubdate) || extractPublishedAtFromText(detail.text);
+  const publishedAt = resolveBilibiliPublishedAt({ pubdate: detail.pubdate, text: detail.text });
+  const title = extractBilibiliTitle({
+    videoData: detail.videoData,
+    documentTitle: detail.documentTitle
+  });
+  const tags = extractBilibiliTags({
+    videoData: detail.videoData,
+    initialTags: detail.initialTags,
+    metaKeywords: detail.metaKeywords,
+    title
+  });
   return {
     bvid,
     publishedAt,
-    videoUrl: normalizeBilibiliVideoUrl(page.url()) || normalizeBilibiliVideoUrl(videoUrl)
+    videoUrl: normalizeBilibiliVideoUrl(page.url()) || normalizeBilibiliVideoUrl(videoUrl),
+    title,
+    tags
   };
 }
 
@@ -312,18 +349,11 @@ function extractVideosFromApiPayload(payload) {
     return {
       bvid,
       videoUrl: normalizeBilibiliVideoUrl(item.arcurl || item.uri || item.url || bvid),
-      publishedAt: dateFromEpoch(item.created || item.pubdate || item.ctime)
+      publishedAt: dateFromBilibiliEpoch(item.created || item.pubdate || item.ctime),
+      title: extractBilibiliTitle({ videoData: item }),
+      tags: extractBilibiliTags({ videoData: item })
     };
   }).filter((item) => item.bvid);
-}
-
-function extractPublishedAtFromText(text) {
-  const normalized = String(text || "").replace(/\u00a0/g, " ");
-  const fullDate = normalized.match(/(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})/);
-  if (fullDate) return `${fullDate[1]}-${pad(fullDate[2])}-${pad(fullDate[3])}`;
-  const cnDate = normalized.match(/(20\d{2})年(\d{1,2})月(\d{1,2})日/);
-  if (cnDate) return `${cnDate[1]}-${pad(cnDate[2])}-${pad(cnDate[3])}`;
-  return "";
 }
 
 async function writeOutputs(rows, { audit = null, mode = "conservative" } = {}) {
@@ -331,13 +361,15 @@ async function writeOutputs(rows, { audit = null, mode = "conservative" } = {}) 
   const xlsPath = path.join(OUTPUT_DIR, `${baseName}.xls`);
   const csvPath = path.join(OUTPUT_DIR, `${baseName}.csv`);
   const jsonPath = path.join(OUTPUT_DIR, `${baseName}.json`);
-  const headers = ["账号名称", "发布时间", "作品链接", "短链id"];
+  const headers = ["账号名称", "发布时间", "作品链接", "短链id", "标题", "TAG词"];
 
   const sheetRows = rows.map((row) => ({
     "账号名称": spreadsheetSafeText(row.accountName),
     "发布时间": row.publishedAt,
     "作品链接": row.videoUrl,
-    "短链id": row.bvid
+    "短链id": row.bvid,
+    "标题": spreadsheetSafeText(row.title || ""),
+    "TAG词": spreadsheetSafeText(row.tags || "")
   }));
 
   await fs.writeFile(xlsPath, buildExcelXml(headers, sheetRows), "utf8");
@@ -357,7 +389,9 @@ async function writeOutputs(rows, { audit = null, mode = "conservative" } = {}) 
       accountName: row.accountName,
       publishedAt: row.publishedAt,
       link: row.videoUrl,
-      id: row.bvid
+      id: row.bvid,
+      title: row.title || "",
+      tags: row.tags || ""
     }))
   }, null, 2), "utf8");
 
@@ -367,7 +401,7 @@ async function writeOutputs(rows, { audit = null, mode = "conservative" } = {}) 
 }
 
 function buildExcelXml(headers, rows) {
-  const widths = [120, 90, 520, 160];
+  const widths = [120, 90, 520, 160, 260, 220];
   const headerCells = headers
     .map((header) => `<Cell ss:StyleID="header"><Data ss:Type="String">${xmlEscape(header)}</Data></Cell>`)
     .join("");
@@ -450,13 +484,6 @@ function parseArgs(args) {
   return options;
 }
 
-function dateFromEpoch(value) {
-  const epoch = Number(value || 0);
-  if (!epoch) return "";
-  const milliseconds = epoch > 10_000_000_000 ? epoch : epoch * 1000;
-  return formatDate(new Date(milliseconds));
-}
-
 function parseDelayRange(value) {
   const text = String(value || "").trim();
   const range = text.match(/^(\d+)\s*-\s*(\d+)$/);
@@ -484,23 +511,39 @@ function randomBetween(min, max) {
 
 function restoreBilibiliDetailFromCache(cached) {
   if (!cached) return null;
+  if (cached.cacheVersion !== BILIBILI_DETAIL_CACHE_VERSION) return null;
   return {
     bvid: cached.bvid || "",
     publishedAt: cached.publishedAt || "",
-    videoUrl: cached.videoUrl || ""
+    videoUrl: cached.videoUrl || "",
+    title: cached.title || "",
+    tags: cached.tags || ""
   };
 }
 
 function serializeBilibiliDetailForCache(detail) {
   return {
+    cacheVersion: BILIBILI_DETAIL_CACHE_VERSION,
     bvid: detail.bvid || "",
     publishedAt: detail.publishedAt || "",
-    videoUrl: detail.videoUrl || ""
+    videoUrl: detail.videoUrl || "",
+    title: detail.title || "",
+    tags: detail.tags || ""
   };
 }
 
 function isCacheableBilibiliDetail(detail) {
   return Boolean(detail && detail.bvid && detail.publishedAt);
+}
+
+function mergeBilibiliDetail(base, detail) {
+  return {
+    bvid: detail?.bvid || base?.bvid || "",
+    publishedAt: detail?.publishedAt || base?.publishedAt || "",
+    videoUrl: detail?.videoUrl || base?.videoUrl || "",
+    title: detail?.title || base?.title || "",
+    tags: detail?.tags || base?.tags || ""
+  };
 }
 
 function modeLabel(mode) {

@@ -39,7 +39,7 @@ import { classifyTags } from "../src/tag-rules.mjs";
 const PLATFORM_XHS_HEADER = ["编号", "投稿时间", "内容链接", "笔记ID", "账号", "内容类型", "内容类型标签审核", "tag词"];
 const PLATFORM_DOUYIN_HEADER = ["编号", "投稿时间", "内容链接", "标题", "tag词", "筛选状态", "简短理由", "账号", "内容类型", "内容类型标签审核", "本地素材目录"];
 const STEP15_FILTERED_HEADER = ["编号", "投稿时间", "内容链接", "账号", "内容类型", "简短理由", "是否投放成功", "是否为爆款", "供稿人", "备注"];
-const PLATFORM_BILIBILI_HEADER = ["编号", "投稿时间", "内容链接", "短链id", "账号"];
+const PLATFORM_BILIBILI_HEADER = ["编号", "投稿时间", "内容链接", "短链id", "账号", "标题", "tag词"];
 const EXPECTED_DOUYIN_CONTENT_TYPES = [
   "资讯",
   "财商动画",
@@ -123,7 +123,7 @@ function separatorRow(platformId, title) {
 function existingMaterialRow(platformId, date) {
   const displayDate = formatDisplayDate(date);
   if (platformId === "xhs") return ["1", displayDate, `${platformId}-old-link`, `${platformId}-old-id`, "投资号", "图文", ""];
-  if (platformId === "bilibili") return ["1", displayDate, `${platformId}-old-link`, "BVold", "投资号"];
+  if (platformId === "bilibili") return ["1", displayDate, `${platformId}-old-link`, "BVold", "投资号", "旧标题", "#old"];
   return ["1", displayDate, `${platformId}-old-link`, "投资号", "资讯", "旧标题", "#tag"];
 }
 
@@ -143,6 +143,8 @@ function itemForPlatform(platformId, date) {
       link: `${platformId}-${date}-new-link`,
       id: "BVnew",
       accountName: "同花顺投资",
+      title: "B站市场机会复盘",
+      tags: "#同花顺资讯 #投资",
       publishedAt: date
     };
   }
@@ -417,29 +419,46 @@ test("Douyin account crawl config omits Miaodong investment", async () => {
   assert.equal(accountConfig.some((account) => account.name === "喵懂投资"), false);
 });
 
-test("bilibili daily records map BV ids and fixed account names", () => {
+test("bilibili daily records map BV ids, fixed account names, title, and tags", () => {
+  assert.deepEqual(PLATFORM_HEADERS.bilibili, PLATFORM_BILIBILI_HEADER);
+
   const rows = buildDailySheetRecords("bilibili", "2026-05-19", [
     {
       link: "https://www.bilibili.com/video/BV1tNLA6hEQh/",
       id: "BV1tNLA6hEQh",
       accountName: "同花顺投资",
+      title: "B站市场机会复盘",
+      tags: "#同花顺资讯 #投资",
       publishedAt: "2026-05-19"
     }
   ]);
 
+  assert.deepEqual(mapDailyRecordToFeishuFields("bilibili", rows[0]), {
+    "编号": "",
+    "投稿时间": "0519 投稿视频",
+    "内容链接": "",
+    "短链id": "",
+    "账号": "",
+    "标题": "",
+    "tag词": ""
+  });
   assert.deepEqual(mapDailyRecordToFeishuFields("bilibili", rows[1]), {
     "编号": "1",
     "投稿时间": "05 19",
     "内容链接": "https://www.bilibili.com/video/BV1tNLA6hEQh/",
     "短链id": "BV1tNLA6hEQh",
-    "账号": "投资号"
+    "账号": "投资号",
+    "标题": "B站市场机会复盘",
+    "tag词": "#同花顺资讯 #投资"
   });
   assert.deepEqual(mapDailyRecordToSheetRow("bilibili", rows[1]), [
     "1",
     "05 19",
     urlCell("https://www.bilibili.com/video/BV1tNLA6hEQh/"),
     "BV1tNLA6hEQh",
-    { type: "multipleValue", values: ["投资号"] }
+    { type: "multipleValue", values: ["投资号"] },
+    "B站市场机会复盘",
+    "#同花顺资讯 #投资"
   ]);
 });
 
@@ -882,6 +901,75 @@ test("new Feishu rows for an existing date append to that block and renumber leg
   assert.deepEqual(calls.at(-1), ["highlightSeparatorRows", "xhs", [2, 5]]);
 });
 
+test("Douyin Feishu sync refreshes title and tags on existing duplicate material rows", async () => {
+  const calls = [];
+  const client = {
+    dataStartRow(platformId) {
+      assert.equal(platformId, "douyin");
+      return 5;
+    },
+    sheetId(platformId) {
+      assert.equal(platformId, "douyin");
+      return "d0de52";
+    },
+    async readRows(platformId) {
+      calls.push(["readRows", platformId]);
+      return [
+        ["", "0525 投稿视频", "", "", "", "", "", "", "", "", ""],
+        [
+          "1",
+          "05 25",
+          "https://www.douyin.com/note/7643770579069209897",
+          "旧标题",
+          "#同花顺AP",
+          "",
+          "",
+          "投资号",
+          "无",
+          "需审核",
+          ""
+        ]
+      ];
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "douyin",
+    targetDate: "2026-05-25",
+    items: [
+      {
+        link: "https://www.douyin.com/note/7643770579069209897",
+        accountName: "同花顺投资",
+        title: "3 万起步，25 岁破亿，游资小鳄鱼的财富曲线",
+        tags: "#同花顺APP",
+        contentType: "无",
+        contentTypeReview: "需审核",
+        publishedAt: "2026-05-25"
+      }
+    ],
+    client
+  });
+
+  assert.equal(result.created, 0);
+  assert.equal(result.updated, 1);
+  assert.equal(calls.some((call) => call[0] === "prependRows"), false);
+  assert.deepEqual(
+    calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!D6:E6"),
+    [
+      "writeRows",
+      "douyin",
+      "d0de52!D6:E6",
+      [["3 万起步，25 岁破亿，游资小鳄鱼的财富曲线", "#同花顺APP"]]
+    ]
+  );
+});
+
 test("Feishu append uses a range matching the appended row count", async () => {
   const requests = [];
   const client = new FeishuSheetsClient({
@@ -921,13 +1009,13 @@ test("Feishu append uses a range matching the appended row count", async () => {
     ["5", "05 19", "link-5", "id-5", "账号", "图文", "通过", "#tag"]
   ]);
   await client.appendRows("bilibili", [
-    ["", "0519 投稿视频", "", "", ""],
-    ["1", "05 19", "link", "BVxxx", "同花顺投资"]
+    ["", "0519 投稿视频", "", "", "", "", ""],
+    ["1", "05 19", "link", "BVxxx", "同花顺投资", "标题", "#tag"]
   ]);
 
   assert.equal(requests[0].body.valueRange.range, "d0de52!A1:K1");
   assert.equal(requests[1].body.valueRange.range, "4z96Ou!A1:H6");
-  assert.equal(requests[2].body.valueRange.range, "1FOmKl!A1:E2");
+  assert.equal(requests[2].body.valueRange.range, "1FOmKl!A1:G2");
 });
 
 test("Feishu prepend inserts blank rows before writing data rows", async () => {
@@ -964,7 +1052,7 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
     ["1", "05 19", "link-1", "id-1", "账号", "图文", "通过", "#tag"]
   ], 2);
   await client.prependRows("bilibili", [
-    ["2", "05 19", "link", "BVxxx", "投资号"]
+    ["2", "05 19", "link", "BVxxx", "投资号", "标题", "#tag"]
   ], 5);
 
   assert.match(requests[0].url, /\/insert_dimension_range$/);
@@ -987,7 +1075,7 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
     endIndex: 5
   });
   assert.match(requests[3].url, /\/values$/);
-  assert.equal(requests[3].body.valueRange.range, "1FOmKl!A5:E5");
+  assert.equal(requests[3].body.valueRange.range, "1FOmKl!A5:G5");
 });
 
 test("Feishu readRows reads the actual sheet rows in chunks past row 5000", async () => {
@@ -1206,7 +1294,7 @@ test("applyFeishuSubmissionTemplate is idempotent and reuses the Step 1.5 sheet 
     ],
     bilibili: [
       PLATFORM_BILIBILI_HEADER,
-      ["", "0521 投稿视频", "", "", ""]
+      ["", "0521 投稿视频", "", "", "", "", ""]
     ],
     step15: [
       ["平台", "编号", "投稿时间", "内容链接", "账号", "内容类型", "标题", "tag词", "筛选状态", "命中规则", "简短理由", "本地素材目录"]
@@ -1361,6 +1449,66 @@ test("applyFeishuSubmissionTemplate remaps legacy Douyin data rows by header nam
     "资讯",
     "通过",
     "/tmp/asset",
+    ""
+  ]);
+});
+
+test("applyFeishuSubmissionTemplate remaps legacy Bilibili data rows by header name", async () => {
+  const calls = [];
+  const legacyBilibiliHeader = ["编号", "投稿时间", "内容链接", "短链id", "账号"];
+  const rowsBySheet = {
+    douyin: [["2026目标  10个爆款/月"], ["投稿规则"], [""], PLATFORM_DOUYIN_HEADER],
+    xhs: [["2026目标  5个爆款/月"], PLATFORM_XHS_HEADER],
+    bilibili: [
+      ["2026目标  2个爆款/月"],
+      legacyBilibiliHeader,
+      ["1", "05 18", urlCell("https://www.bilibili.com/video/BVlegacy/"), "BVlegacy", "投资号"]
+    ],
+    step15: [["2026目标  10个爆款/月"], ["投稿规则"], [""], STEP15_FILTERED_HEADER]
+  };
+  const client = {
+    config: {
+      sheets: {
+        douyin: "d0de52",
+        xhs: "4z96Ou",
+        bilibili: "1FOmKl",
+        step15: "VIw5q"
+      }
+    },
+    sheetId(sheetKey) {
+      return this.config.sheets[sheetKey];
+    },
+    async listSheets() {
+      return [
+        { properties: { sheet_id: "d0de52", title: "抖音渠道" } },
+        { properties: { sheet_id: "4z96Ou", title: "小红书渠道" } },
+        { properties: { sheet_id: "1FOmKl", title: "B站渠道" } },
+        { properties: { sheet_id: "VIw5q", title: "抖音筛选结果" } }
+      ];
+    },
+    async readSheetRows(sheetKey) {
+      return rowsBySheet[sheetKey];
+    },
+    async insertRowsBefore() {},
+    async writeRows(sheetKey, range, rows) {
+      calls.push(["writeRows", sheetKey, range, rows]);
+    },
+    async mergeCells() {},
+    async setRangeStyle() {},
+    async freezeRows() {}
+  };
+
+  await applyFeishuSubmissionTemplate({ client });
+
+  const migrateCall = calls.find((call) => call[0] === "writeRows" && call[2] === "1FOmKl!A3:G3");
+  assert.ok(migrateCall, "expected legacy Bilibili data rewrite that adds blank title and tag columns");
+  assert.deepEqual(migrateCall[3][0], [
+    "1",
+    "05 18",
+    urlCell("https://www.bilibili.com/video/BVlegacy/"),
+    "BVlegacy",
+    "投资号",
+    "",
     ""
   ]);
 });
@@ -1785,15 +1933,15 @@ test("Bilibili Feishu writes keep material rows unhighlighted when inserting abo
         const values = readCount === 1
           ? [
               PLATFORM_BILIBILI_HEADER,
-              ["", "0519 投稿视频", "", "", ""],
-              ["1", "05 19", "old-link", "BVold", "投资号"]
+              ["", "0519 投稿视频", "", "", "", "", ""],
+              ["1", "05 19", "old-link", "BVold", "投资号", "旧标题", "#old"]
             ]
           : [
               PLATFORM_BILIBILI_HEADER,
-              ["", "0520 投稿视频", "", "", ""],
-              ["1", "05 20", "new-link", "BVnew", "投资号"],
-              ["", "0519 投稿视频", "", "", ""],
-              ["1", "05 19", "old-link", "BVold", "投资号"]
+              ["", "0520 投稿视频", "", "", "", "", ""],
+              ["1", "05 20", "new-link", "BVnew", "投资号", "新标题", "#new"],
+              ["", "0519 投稿视频", "", "", "", "", ""],
+              ["1", "05 19", "old-link", "BVold", "投资号", "旧标题", "#old"]
             ];
         return {
           ok: true,
@@ -1811,7 +1959,7 @@ test("Bilibili Feishu writes keep material rows unhighlighted when inserting abo
               code: 0,
               data: {
                 updates: {
-                  updatedRange: "1FOmKl!A2:E3"
+                  updatedRange: "1FOmKl!A2:G3"
                 }
               }
             });
@@ -1836,6 +1984,8 @@ test("Bilibili Feishu writes keep material rows unhighlighted when inserting abo
         link: "new-link",
         id: "BVnew",
         accountName: "同花顺投资",
+        title: "新标题",
+        tags: "#new",
         publishedAt: "2026-05-20"
       }
     ],
@@ -1848,19 +1998,19 @@ test("Bilibili Feishu writes keep material rows unhighlighted when inserting abo
   const styleRequests = requests.filter((request) => request.url.endsWith("/style"));
   assert.deepEqual(styleRequests.map((request) => request.body.appendStyle), [
     {
-      range: "1FOmKl!A3:E3",
+      range: "1FOmKl!A3:G3",
       style: {
         backColor: "#FFFFFF"
       }
     },
     {
-      range: "1FOmKl!A2:E2",
+      range: "1FOmKl!A2:G2",
       style: {
         backColor: "#FEF258"
       }
     },
     {
-      range: "1FOmKl!A4:E4",
+      range: "1FOmKl!A4:G4",
       style: {
         backColor: "#FEF258"
       }

@@ -2,15 +2,31 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   extractDouyinApiDetail,
+  extractDouyinPublishedAtFromText,
   extractDouyinTags,
   extractDouyinTagsFromSources,
-  extractDouyinTitle
+  extractDouyinTitle,
+  isLowConfidenceDouyinTags
 } from "../src/douyin-detail-text.mjs";
+
+function localDateKey(date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-");
+}
 
 test("extractDouyinTags normalizes spaced tags and removes duplicates", () => {
   const text = "你会推荐哪一本呢？ # 同花顺APP #同花顺股民话题 # 同花顺APP # 投资";
 
   assert.equal(extractDouyinTags(text), "#同花顺APP #同花顺股民话题 #投资");
+});
+
+test("extractDouyinTags filters truncated Douyin tag tokens without removing valid short tags", () => {
+  const text = "机会来了 # 同花顺AP # 同花顺A # 同花 # 同 # - # A股 # 问财 # 股市";
+
+  assert.equal(extractDouyinTags(text), "#同花顺APP #A股 #问财 #股市");
 });
 
 test("extractDouyinTagsFromSources falls back to copied share text before page body", () => {
@@ -33,6 +49,16 @@ test("extractDouyinTagsFromSources avoids unrelated recommendation tags from pag
   });
 
   assert.equal(result, "");
+});
+
+test("extractDouyinTagsFromSources uses share text when page tags are truncated", () => {
+  const result = extractDouyinTagsFromSources({
+    itemText: "2026 年科技行业，各赛道三巨头盘点 # 同顺图解 # -",
+    titleText: "2026 年科技行业，各赛道三巨头盘点 # 同顺图解 # - - 抖音",
+    shareText: "8.20 a@b 2026 年科技行业，各赛道三巨头盘点 # 同顺图解 # 同花顺APP # 投资 https://v.douyin.com/xxx/ 复制此链接，打开抖音搜索，直接观看视频！"
+  });
+
+  assert.equal(result, "#同顺图解 #同花顺APP #投资");
 });
 
 test("extractDouyinApiDetail falls back to current video category tags", () => {
@@ -61,6 +87,28 @@ test("extractDouyinApiDetail falls back to current video category tags", () => {
   assert.equal(result.publishedAt.toISOString(), "2026-05-21T04:29:42.000Z");
 });
 
+test("extractDouyinApiDetail uses create_time even when title contains another date", () => {
+  const result = extractDouyinApiDetail({
+    desc: "5月22日涨停复盘！",
+    create_time: Date.parse("2026-05-24T10:00:00+08:00") / 1000
+  });
+
+  assert.equal(localDateKey(result.publishedAt), "2026-05-24");
+});
+
+test("extractDouyinPublishedAtFromText ignores business dates without publish labels", () => {
+  assert.equal(
+    extractDouyinPublishedAtFromText("5月22日涨停复盘！\n点赞 100", "2026-05-24"),
+    null
+  );
+});
+
+test("extractDouyinPublishedAtFromText parses explicit publish labels", () => {
+  const result = extractDouyinPublishedAtFromText("标题\n发布时间：2026-05-22 18:00", "2026-05-24");
+
+  assert.equal(localDateKey(result), "2026-05-22");
+});
+
 test("extractDouyinApiDetail prefers explicit hashtag metadata over category tags", () => {
   const result = extractDouyinApiDetail({
     desc: "市场机会来了 # 同花顺资讯 #投资",
@@ -74,6 +122,27 @@ test("extractDouyinApiDetail prefers explicit hashtag metadata over category tag
   });
 
   assert.equal(result.tags, "#同花顺资讯 #投资");
+});
+
+test("extractDouyinApiDetail replaces truncated desc tags with explicit hashtag metadata", () => {
+  const result = extractDouyinApiDetail({
+    desc: "3 万起步，25 岁破亿，游资小鳄鱼的财富曲线 # 同花顺AP",
+    text_extra: [
+      { hashtag_name: "同花顺APP" },
+      { hashtag_name: "投资" }
+    ],
+    video_tag: [
+      { tag_name: "财经" }
+    ]
+  });
+
+  assert.equal(result.tags, "#同花顺APP #投资");
+});
+
+test("isLowConfidenceDouyinTags flags old cached truncated tags", () => {
+  assert.equal(isLowConfidenceDouyinTags("#同花顺AP"), true);
+  assert.equal(isLowConfidenceDouyinTags("#同顺图解 #-"), true);
+  assert.equal(isLowConfidenceDouyinTags("#A股 #问财 #股市"), false);
 });
 
 test("extractDouyinTitle reads the first useful detail text line", () => {

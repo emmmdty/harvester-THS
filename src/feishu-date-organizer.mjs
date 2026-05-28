@@ -6,6 +6,7 @@ import { extractFeishuCellLink, PLATFORM_HEADERS } from "./daily-records.mjs";
 import { formatBatchTitle, formatDate, formatDisplayDate, parseDateStringParts } from "./date-utils.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
 import { canonicalizeContentLink, extractBilibiliBv, extractXhsNoteId } from "./link-utils.mjs";
+import { XHS_DETAIL_CACHE_VERSION } from "./xhs-published-date.mjs";
 
 const PLATFORM_IDS = ["douyin", "xhs", "bilibili"];
 
@@ -212,7 +213,7 @@ async function writeOrganizedPlatformRows({ client, platformId, existingRows, or
 export async function buildPublishedDateResolver({ root = process.cwd() } = {}) {
   const detailCaches = {
     douyin: await readDetailCache(path.join(root, ".runtime", "detail-cache", "douyin")),
-    xhs: await readDetailCache(path.join(root, ".runtime", "detail-cache", "xhs"))
+    xhs: await readDetailCache(path.join(root, ".runtime", "detail-cache", "xhs"), { platformId: "xhs" })
   };
   const localJson = await readLocalJsonPublishedDates(root);
 
@@ -234,13 +235,14 @@ export async function buildPublishedDateResolver({ root = process.cwd() } = {}) 
   };
 }
 
-async function readDetailCache(dir) {
+async function readDetailCache(dir, { platformId = "" } = {}) {
   const cache = new Map();
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
     const id = entry.name.replace(/\.json$/u, "");
     const parsed = JSON.parse(await fs.readFile(path.join(dir, entry.name), "utf8"));
+    if (platformId === "xhs" && parsed.cacheVersion !== XHS_DETAIL_CACHE_VERSION) continue;
     if (parsed.publishedAt) cache.set(id, { publishedAt: parsed.publishedAt });
   }
   return cache;
@@ -263,6 +265,7 @@ async function readLocalJsonPublishedDates(root) {
     if (!Array.isArray(parsed.items)) continue;
     for (const item of parsed.items) {
       const platformId = item.platform;
+      if (platformId === "xhs" && parsed.publishedAtVersion !== XHS_DETAIL_CACHE_VERSION) continue;
       const publishedAt = normalizeSheetDate(item.publishedAt);
       if (!publishedAt) continue;
       const link = item.link || item.noteUrl || item.itemUrl || item.videoUrl || "";

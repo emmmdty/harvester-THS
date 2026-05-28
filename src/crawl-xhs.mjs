@@ -2,13 +2,21 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
-import { formatDate as formatDateInTimeZone, parsePublishedDateText } from "./date-utils.mjs";
+import { formatDate as formatDateInTimeZone } from "./date-utils.mjs";
 import { classifyContentType } from "./content-classifier.mjs";
 import { buildXhsExploreUrl, extractXhsNoteId, normalizeXhsContentLink } from "./link-utils.mjs";
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
 import { isXhsProfileUrl, loadXhsAccounts, selectXhsAccounts } from "./xhs-accounts.mjs";
 import { buildXhsOutputBaseName } from "./xhs-output-names.mjs";
-import { createXhsDetailRiskGuard, resolveXhsPublishedAt } from "./xhs-published-date.mjs";
+import {
+  XHS_DETAIL_CACHE_VERSION,
+  createXhsDetailRiskGuard,
+  parseXhsDetailPublishedAt,
+  resolveXhsPublishedAtEntry,
+  resolveXhsStatePublishedAt,
+  restoreXhsDetailFromCache,
+  serializeXhsDetailForCache
+} from "./xhs-published-date.mjs";
 import {
   DetailCache,
   createCrawlAudit,
@@ -246,19 +254,21 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
         }
         continue;
       }
-      const effectivePublishedAt = resolveXhsPublishedAt({
+      const effectivePublishedAt = resolveXhsPublishedAtEntry({
         detailPublishedAt: detail.publishedAt,
+        detailPublishedAtSource: detail.publishedAtSource,
         statePublishedAt: link.statePublishedAt,
+        statePublishedAtSource: link.statePublishedAtSource,
         detailBlocked: detail.blocked
       });
-      if (!effectivePublishedAt) {
+      if (!effectivePublishedAt.publishedAt) {
         const reason = detail.blocked ? "详情页触发风控或不可浏览" : "未识别发布时间";
-        console.warn(`${reason}：${link.exportUrl} stateTime=${link.stateTimeValue ?? ""}`);
+        console.warn(`${reason}：${link.exportUrl} stateTime=${link.stateTimeValue ?? ""} detailTime=${detail.dateCandidates ?? ""}`);
         continue;
       }
 
-      const publishedAt = dateKey(effectivePublishedAt);
-      const rangePosition = comparePublishedAtToDateRange({ publishedAt: effectivePublishedAt, since: SINCE, until: TODAY });
+      const publishedAt = dateKey(effectivePublishedAt.publishedAt);
+      const rangePosition = comparePublishedAtToDateRange({ publishedAt: effectivePublishedAt.publishedAt, since: SINCE, until: TODAY });
       if (rangePosition === "before-since") {
         oldNoteRounds += 1;
         console.log(`边界检查：发现早于开始日期的作品，不导出：${accountName} ${publishedAt} ${link.exportUrl}`);
@@ -292,6 +302,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
         noteUrl: chooseXhsExportUrl(detail.noteUrl, link.exportUrl),
         title: link.title || "",
         tags: detail.tags,
+        publishedAtSource: effectivePublishedAt.source,
         contentType: classification.contentType,
         contentTypeReview: classification.contentTypeReview
       });
@@ -353,18 +364,32 @@ async function getPublishedNotesFromState(page) {
         title: item.noteCard?.displayTitle || "",
         author: item.noteCard?.user?.nickName || "",
         cover: item.noteCard?.cover?.urlDefault || "",
-        timeValue: item.noteCard?.time || item.noteCard?.lastUpdateTime || item.noteCard?.publishTime || item.noteCard?.createTime || item.time || item.timestamp || null
+        timeFields: {
+          publishedAt: item.noteCard?.publishedAt || item.noteCard?.published_at || item.publishedAt || item.published_at || null,
+          publishAt: item.noteCard?.publishAt || item.noteCard?.publish_at || item.publishAt || item.publish_at || null,
+          publishTime: item.noteCard?.publishTime || item.noteCard?.publish_time || item.publishTime || item.publish_time || null,
+          publishedTime: item.noteCard?.publishedTime || item.noteCard?.published_time || item.publishedTime || item.published_time || null,
+          createTime: item.noteCard?.createTime || item.noteCard?.create_time || item.createTime || item.create_time || null,
+          createdTime: item.noteCard?.createdTime || item.noteCard?.created_time || item.createdTime || item.created_time || null,
+          lastUpdateTime: item.noteCard?.lastUpdateTime || item.noteCard?.last_update_time || item.lastUpdateTime || item.last_update_time || null,
+          time: item.noteCard?.time || item.time || null,
+          timestamp: item.timestamp || null
+        }
       }));
   }).catch(() => []);
 
   const stateNotes = notes.map((note) => {
     const url = buildXhsExploreUrl(note.id, note.token);
+    const statePublishedAt = resolveXhsStatePublishedAt(note.timeFields, {
+      referenceDateString: formatDate(REFERENCE_DATE)
+    });
     return {
       ...note,
       detailUrl: url,
       exportUrl: url,
-      statePublishedAt: parseStateTime(note.timeValue),
-      stateTimeValue: note.timeValue
+      statePublishedAt: statePublishedAt.publishedAt,
+      statePublishedAtSource: statePublishedAt.source,
+      stateTimeValue: statePublishedAt.rawValue
     };
   });
 
@@ -409,75 +434,45 @@ async function scrapeNoteDetailFromPage(page) {
   }
 
   const tags = extractTags(bodyText);
-  const dateText = await readDetailDateText(page);
-  const publishedAt = dateText ? parsePublishedAt(dateText) : extractPublishedAtFromDetailText(bodyText);
+  const dateTexts = await readDetailDateTexts(page);
+  const publishedAtResult = parseXhsDetailPublishedAt({
+    dateTexts,
+    bodyText,
+    referenceDateString: formatDate(REFERENCE_DATE)
+  });
 
-  return { tags, publishedAt };
+  return {
+    tags,
+    publishedAt: publishedAtResult.publishedAt,
+    publishedAtSource: publishedAtResult.source,
+    dateCandidates: publishedAtResult.candidates.join(" | ")
+  };
 }
 
-async function readDetailDateText(page) {
+async function readDetailDateTexts(page) {
   const selectors = [
     ".note-content .bottom-container .date",
     ".bottom-container .date",
     "span.date"
   ];
 
+  const texts = [];
   for (const selector of selectors) {
-    const text = await page.locator(selector).first().innerText({ timeout: 1200 }).catch(() => "");
-    if (text.trim()) return text.trim();
+    const values = await page.locator(selector).evaluateAll((elements) => {
+      return elements
+        .map((element) => element.innerText || element.textContent || "")
+        .map((text) => text.trim())
+        .filter(Boolean);
+    }).catch(() => []);
+    texts.push(...values);
   }
 
-  return "";
-}
-
-function extractPublishedAtFromDetailText(text) {
-  const lines = text
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const candidates = lines.filter((line) => {
-    if (line.length > 40) return false;
-    if (/^(刚刚|\d+\s*分钟前|\d+\s*小时前|\d+\s*天前|\d+\s*周前|昨天|今天)(?:\s+\d{1,2}:\d{2})?(?:\s+\S{2,8})?$/.test(line)) return true;
-    if (/^(发布于|编辑于|发表于)\s*(刚刚|\d+\s*分钟前|\d+\s*小时前|\d+\s*天前|\d+\s*周前|昨天|今天)(?:\s+\d{1,2}:\d{2})?(?:\s+\S{2,8})?$/.test(line)) return true;
-    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:\s+\S{2,8})?$/.test(line)) return true;
-    if (/^(发布于|编辑于|发表于)\s*\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:\s+\S{2,8})?$/.test(line)) return true;
-    if (/^\d{1,2}[-/.]\d{1,2}(?:\s+\d{1,2}:\d{2})?(?:\s+\S{2,8})?$/.test(line)) return true;
-    if (/^(发布于|编辑于|发表于)\s*\d{1,2}[-/.]\d{1,2}(?:\s+\d{1,2}:\d{2})?(?:\s+\S{2,8})?$/.test(line)) return true;
-    return false;
-  });
-
-  for (const line of candidates) {
-    const date = parsePublishedAt(line);
-    if (date) return date;
-  }
-
-  return null;
+  return [...new Set(texts)];
 }
 
 function extractTags(text) {
   const matches = text.match(/#[\p{Script=Han}\p{Letter}\p{Number}_-]+/gu) || [];
   return [...new Set(matches)].join(" ");
-}
-
-function parsePublishedAt(text) {
-  const dateString = parsePublishedDateText(text, formatDate(REFERENCE_DATE));
-  return dateString ? parseDateOnly(dateString) : null;
-}
-
-function parseStateTime(value) {
-  if (!value) return null;
-  if (typeof value === "number") {
-    const milliseconds = value > 10_000_000_000 ? value : value * 1000;
-    return cloneDate(new Date(milliseconds));
-  }
-
-  const text = String(value).trim();
-  if (/^\d+$/.test(text)) {
-    return parseStateTime(Number(text));
-  }
-
-  return parsePublishedAt(text);
 }
 
 async function writeOutputs(rows, { accountName = "", audit = null, mode = "conservative" } = {}) {
@@ -513,6 +508,7 @@ async function writeOutputs(rows, { accountName = "", audit = null, mode = "cons
   await fs.writeFile(csvPath, csv, "utf8");
   await fs.writeFile(jsonPath, JSON.stringify({
     platform: "xhs",
+    publishedAtVersion: XHS_DETAIL_CACHE_VERSION,
     mode,
     since: formatDate(SINCE),
     until: formatDate(TODAY),
@@ -525,6 +521,7 @@ async function writeOutputs(rows, { accountName = "", audit = null, mode = "cons
       id: extractXhsNoteId(row.noteUrl),
       title: row.title || "",
       tags: row.tags || "",
+      publishedAtSource: row.publishedAtSource || "",
       contentType: row.contentType || "无",
       contentTypeReview: row.contentTypeReview || "需审核"
     }))
@@ -727,15 +724,6 @@ function parseDateInput(value, label) {
   return date;
 }
 
-function parseDateOnly(value) {
-  const [year, month, day] = value.split("-").map(Number);
-  return new Date(year, month - 1, day);
-}
-
-function cloneDate(date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
 function formatDate(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
@@ -767,23 +755,6 @@ async function waitRandom(page, range, label = "停留") {
 function randomBetween(min, max) {
   if (max <= min) return min;
   return Math.floor(min + Math.random() * (max - min + 1));
-}
-
-function restoreXhsDetailFromCache(cached) {
-  if (!cached) return null;
-  return {
-    tags: cached.tags || "",
-    publishedAt: cached.publishedAt ? parseDateOnly(cached.publishedAt) : null,
-    noteUrl: cached.noteUrl || ""
-  };
-}
-
-function serializeXhsDetailForCache(detail) {
-  return {
-    tags: detail.tags || "",
-    publishedAt: detail.publishedAt ? formatDate(detail.publishedAt) : "",
-    noteUrl: detail.noteUrl || ""
-  };
 }
 
 function isCacheableXhsDetail(detail) {

@@ -4,9 +4,8 @@ export const PANEL_SESSION_COOKIE = "harvester_panel_session";
 const DEFAULT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 export function assertPanelPasswordConfig({ host, panelPassword }) {
-  if (isSharedHost(host) && !String(panelPassword || "").trim()) {
-    throw new Error("HOST=0.0.0.0 或 HOST=:: 开启局域网共享时必须配置 PANEL_PASSWORD。");
-  }
+  void host;
+  void panelPassword;
 }
 
 export function isSharedHost(host) {

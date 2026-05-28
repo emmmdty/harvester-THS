@@ -64,7 +64,7 @@ export async function collectDaily({
         });
         platformSummary.status = "written";
         platformSummary.feishu = result.feishu;
-        log(`${config.label} 飞书写入：新增 ${result.feishu.created}，跳过 ${result.feishu.skipped}`);
+        log(`${config.label} 飞书写入：新增 ${result.feishu.created}，更新 ${result.feishu.updated || 0}，跳过 ${result.feishu.skipped}`);
       }
       summary.platforms[platformId] = platformSummary;
     } catch (error) {

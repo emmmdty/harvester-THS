@@ -70,13 +70,13 @@ const SHEET_TEMPLATES = {
     width: PLATFORM_HEADERS.bilibili.length,
     headerRow: PLATFORM_SHEET_LAYOUTS.bilibili.headerRow,
     dataStartRow: PLATFORM_SHEET_LAYOUTS.bilibili.dataStartRow,
-    topRows: [["2026目标  2个爆款/月", "", "", "", ""]],
+    topRows: [["2026目标  2个爆款/月"]],
     headers: PLATFORM_HEADERS.bilibili,
-    legacyHeaders: [PLATFORM_HEADERS.bilibili],
-    merges: ["A1:E1"],
+    legacyHeaders: [PLATFORM_HEADERS.bilibili, ...(PLATFORM_LEGACY_HEADERS.bilibili || [])],
+    merges: ["A1:G1"],
     styles: [
-      ["A1:E1", DARK_STYLE],
-      ["A2:E2", HEADER_STYLE]
+      ["A1:G1", DARK_STYLE],
+      ["A2:G2", HEADER_STYLE]
     ],
     frozenRowCount: 2
   },

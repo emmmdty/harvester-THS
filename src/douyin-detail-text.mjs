@@ -1,34 +1,105 @@
+import { dateStringToDate, parsePublishedDateText } from "./date-utils.mjs";
+
 const TAG_PATTERN = /#[\p{Script=Han}\p{Letter}\p{Number}_-]+/gu;
 const SPACED_TAG_PATTERN = /#\s+([\p{Script=Han}\p{Letter}\p{Number}_-]+)/gu;
 const URL_PATTERN = /https?:\/\/\S+/giu;
+const INCOMPLETE_TAG_NAMES = new Set(["-", "_", "同", "同花"]);
+const RECOVERABLE_TAG_NAMES = new Map([
+  ["同花顺A", "同花顺APP"],
+  ["同花顺AP", "同花顺APP"]
+]);
 
 export function extractDouyinTags(text) {
-  const normalized = normalizeText(text).replace(SPACED_TAG_PATTERN, "#$1");
-  const matches = normalized.match(TAG_PATTERN) || [];
-  return [...new Set(matches)].join(" ");
+  return formatTagNames(rawTagNamesFromText(text));
 }
 
 export function extractDouyinTagsFromSources({ itemText = "", titleText = "", shareText = "" } = {}) {
-  for (const source of [itemText, titleText, shareText]) {
-    const tags = extractDouyinTags(source);
-    if (tags) return tags;
-  }
-  return "";
+  return extractDouyinTagDetailFromSources({ itemText, titleText, shareText }).tags;
+}
+
+export function extractDouyinTagDetailFromSources({ itemText = "", titleText = "", shareText = "" } = {}) {
+  return mergeDouyinTagCandidates([
+    tagCandidateFromText(shareText, { priority: 20 }),
+    tagCandidateFromText(itemText, { priority: 10 }),
+    tagCandidateFromText(titleText, { priority: 5 })
+  ]);
+}
+
+export function mergeDouyinTagCandidates(candidates = []) {
+  const normalizedCandidates = candidates
+    .map((candidate = {}) => {
+      const tags = extractDouyinTags(candidate.tags || candidate.text || "");
+      return {
+        tags,
+        priority: Number(candidate.priority || 0),
+        fallback: Boolean(candidate.fallback),
+        lowConfidence: Boolean(candidate.lowConfidence) || isLowConfidenceDouyinTags(candidate.tags || candidate.text || "")
+      };
+    })
+    .filter((candidate) => candidate.tags);
+
+  const primaryCandidates = normalizedCandidates.filter((candidate) => !candidate.fallback);
+  const selected = (primaryCandidates.length ? primaryCandidates : normalizedCandidates)
+    .sort((a, b) => b.priority - a.priority);
+  const tags = mergeFormattedTags(selected.map((candidate) => candidate.tags));
+
+  return {
+    tags,
+    lowConfidence: !tags || selected.some((candidate) => candidate.lowConfidence)
+  };
+}
+
+export function isLowConfidenceDouyinTags(text) {
+  const rawNames = rawTagNamesFromText(text);
+  if (!rawNames.length) return true;
+  const validNames = rawNames.filter((name) => normalizeTagName(name));
+  return validNames.length !== rawNames.length
+    || validNames.length === 0
+    || rawNames.some((name) => {
+      const normalized = normalizeRawTagName(name);
+      return Boolean(normalized && normalizeTagName(name) && normalizeTagName(name) !== normalized);
+    });
 }
 
 export function extractDouyinApiDetail(rawDetail) {
   const detail = rawDetail?.aweme_detail || rawDetail || {};
   const title = extractDouyinTitle({ itemText: detail.desc || detail.caption || "" });
-  const tags = extractTagsFromAwemeDetail(detail);
+  const tagDetail = extractTagsFromAwemeDetail(detail);
   const authorSecUid = String(detail.author?.sec_uid || "").trim();
 
   return {
     title,
-    tags,
+    tags: tagDetail.tags,
+    tagsFallback: tagDetail.fallback,
+    tagsLowConfidence: tagDetail.lowConfidence,
     publishedAt: parseAwemeCreateTime(detail.create_time),
     authorProfileUrl: authorSecUid ? `https://www.douyin.com/user/${authorSecUid}` : "",
     authorName: String(detail.author?.nickname || "").trim()
   };
+}
+
+export function extractDouyinPublishedAtFromText(text, referenceDateString) {
+  const normalized = normalizeText(text);
+  if (!normalized) return null;
+
+  const lines = normalized
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    if (line.length > 100) continue;
+    if (!looksLikeDouyinPublishedDateLine(line)) continue;
+    const dateString = parsePublishedDateText(line, referenceDateString);
+    if (dateString) return dateStringToDate(dateString);
+  }
+
+  if (looksLikeDouyinPublishedDateLine(normalized)) {
+    const dateString = parsePublishedDateText(normalized, referenceDateString);
+    if (dateString) return dateStringToDate(dateString);
+  }
+
+  return null;
 }
 
 export function extractDouyinTitle({ itemText = "", titleText = "", shareText = "" } = {}) {
@@ -92,18 +163,19 @@ function isMetadataLine(line) {
 }
 
 function extractTagsFromAwemeDetail(detail) {
-  const descTags = extractDouyinTags(detail.desc || detail.caption || "");
-  if (descTags) return descTags;
-
   const explicitTags = [
     ...extractNames(detail.text_extra, ["hashtag_name", "hashtagName", "cha_name", "tag_name"]),
     ...extractNames(detail.cha_list, ["cha_name", "hashtag_name", "tag_name"]),
     ...extractNames(detail.challenge_list, ["cha_name", "hashtag_name", "tag_name"])
   ];
-  if (explicitTags.length) return formatTagNames(explicitTags);
+  const descText = [detail.desc, detail.caption].filter(Boolean).join("\n");
 
   const categoryTags = extractNames(detail.video_tag, ["tag_name"]);
-  return categoryTags.length ? formatTagNames(categoryTags) : "";
+  return mergeDouyinTagCandidates([
+    tagCandidateFromNames(explicitTags, { priority: 30 }),
+    tagCandidateFromText(descText, { priority: 10 }),
+    tagCandidateFromNames(categoryTags, { priority: 0, fallback: true })
+  ]);
 }
 
 function extractNames(items, keys) {
@@ -124,10 +196,7 @@ function formatTagNames(names) {
   const seen = new Set();
   const tags = [];
   for (const name of names) {
-    const normalized = String(name || "")
-      .replace(/^#+/u, "")
-      .replace(/\s+/g, "")
-      .trim();
+    const normalized = normalizeTagName(name);
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
     tags.push(`#${normalized}`);
@@ -135,11 +204,71 @@ function formatTagNames(names) {
   return tags.join(" ");
 }
 
+function tagCandidateFromText(text, { priority = 0, fallback = false } = {}) {
+  return {
+    tags: extractDouyinTags(text),
+    priority,
+    fallback,
+    lowConfidence: hasRawTags(text) && isLowConfidenceDouyinTags(text)
+  };
+}
+
+function tagCandidateFromNames(names, { priority = 0, fallback = false } = {}) {
+  const rawNames = Array.isArray(names) ? names : [];
+  return {
+    tags: formatTagNames(rawNames),
+    priority,
+    fallback,
+    lowConfidence: rawNames.length > 0 && rawNames.some((name) => !normalizeTagName(name))
+  };
+}
+
+function mergeFormattedTags(tagGroups) {
+  const names = [];
+  for (const group of tagGroups) {
+    names.push(...rawTagNamesFromText(group));
+  }
+  return formatTagNames(names);
+}
+
+function rawTagNamesFromText(text) {
+  const normalized = normalizeText(text).replace(SPACED_TAG_PATTERN, "#$1");
+  const matches = normalized.match(TAG_PATTERN) || [];
+  return matches.map((tag) => tag.replace(/^#+/u, ""));
+}
+
+function hasRawTags(text) {
+  return rawTagNamesFromText(text).length > 0;
+}
+
+function normalizeTagName(name) {
+  const normalized = normalizeRawTagName(name);
+  if (!normalized) return "";
+  if (RECOVERABLE_TAG_NAMES.has(normalized)) return RECOVERABLE_TAG_NAMES.get(normalized);
+  if (INCOMPLETE_TAG_NAMES.has(normalized)) return "";
+  if (/^[-_]+$/u.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeRawTagName(name) {
+  return String(name || "")
+    .replace(/^#+/u, "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
 function parseAwemeCreateTime(value) {
   const timestamp = Number(value);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
   const millis = timestamp > 1e12 ? timestamp : timestamp * 1000;
   return new Date(millis);
+}
+
+function looksLikeDouyinPublishedDateLine(line) {
+  if (/^(?:发布时间|发布于)[:：]?\s*/u.test(line)) return true;
+  return /^(?:刚刚|\d+\s*分钟前|\d+\s*小时前|昨天|今天)(?:\s+\d{1,2}:\d{2})?$/u.test(line)
+    || /^20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}(?:\s+\d{1,2}:?\d{0,2})?$/u.test(line)
+    || /^20\d{2}年\d{1,2}月\d{1,2}日(?:\s+\d{1,2}:?\d{0,2})?$/u.test(line);
 }
 
 function normalizeText(text) {

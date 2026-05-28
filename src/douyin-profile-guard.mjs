@@ -12,15 +12,21 @@ export function extractDouyinUserId(rawUrl = "") {
   }
 }
 
-export function extractPrimaryDouyinAuthorProfileUrl(rawUrls = []) {
+export function extractPrimaryDouyinAuthorProfileUrl(rawUrls = [], { preferredProfileUrl = "" } = {}) {
+  const preferredId = extractDouyinUserId(preferredProfileUrl);
+  let fallbackProfileUrl = "";
+
   for (const rawUrl of rawUrls || []) {
     const id = extractDouyinUserId(rawUrl);
     if (!id) continue;
     const url = new URL(rawUrl, "https://www.douyin.com");
     if (url.searchParams.has("author_id") || url.searchParams.has("group_id")) continue;
-    return `https://www.douyin.com/user/${id}`;
+    const profileUrl = `https://www.douyin.com/user/${id}`;
+    if (preferredId && id === preferredId) return profileUrl;
+    if (!fallbackProfileUrl) fallbackProfileUrl = profileUrl;
   }
-  return "";
+
+  return fallbackProfileUrl;
 }
 
 export function douyinProfileIdsMatch(expectedProfileUrl = "", actualProfileUrl = "") {

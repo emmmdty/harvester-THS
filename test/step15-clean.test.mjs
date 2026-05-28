@@ -14,6 +14,7 @@ import {
   STEP15_FILTER_STANDARD_VERSION,
   applyBatchPassQuota,
   applyHistoricalPassProtection,
+  calibrateStep15Decision,
   detectHistoricalFilterPriors,
   detectLocalFilterRisks,
   detectLocalFilterSignals,
@@ -37,6 +38,8 @@ const batchItem = (sourceRowNumber, result, options = {}) => ({
   sourceRow: {
     sourceRowNumber,
     fields: {
+      "标题": options.title || "",
+      "tag词": options.tags || "",
       "账号": "投资号",
       "内容类型": options.contentType || "股友说"
     }
@@ -302,7 +305,7 @@ test("batch pass quota never passes hard rejects or Qwen rejects", () => {
   assert.ok(results.find((item) => item.sourceRowNumber === 3).quota.rank < results.find((item) => item.sourceRowNumber === 6).quota.rank);
 });
 
-test("balanced quota is stricter for news review than non-news light review", () => {
+test("batch pass quota never promotes review decisions to pass", () => {
   const newsReview = batchItem(1, {
     status: "review",
     ruleIds: ["P_INFO"],
@@ -329,7 +332,159 @@ test("balanced quota is stricter for news review than non-news light review", ()
   });
 
   assert.equal(results.find((item) => item.sourceRowNumber === 1).result.status, "review");
-  assert.equal(results.find((item) => item.sourceRowNumber === 2).result.status, "pass");
+  assert.equal(results.find((item) => item.sourceRowNumber === 2).result.status, "review");
+});
+
+test("step15 calibration passes explicit low-risk Qwen review", () => {
+  const calibrated = calibrateStep15Decision(batchItem(1, {
+    status: "review",
+    ruleIds: [],
+    briefReason: "内容属交易心理分享，未发现具体荐股、收益承诺或交易指令。",
+    evidence: ["交易心理分享"]
+  }));
+
+  assert.equal(calibrated.result.status, "pass");
+  assert.equal(calibrated.calibration.source, "calibrated-likely-pass");
+  assert.match(calibrated.result.briefReason, /低风险|未见|未发现/);
+});
+
+test("step15 calibration rejects high-risk news review signals", () => {
+  const calibrated = calibrateStep15Decision(batchItem(2, {
+    status: "review",
+    ruleIds: ["R10"],
+    briefReason: "主力资金净流入榜单需要复核。",
+    evidence: ["主力净流入"]
+  }, {
+    contentType: "资讯",
+    localRisks: [{ ruleId: "R10", label: "资金流/选股模型", action: "review", evidence: "主力净流入" }]
+  }));
+
+  assert.equal(calibrated.result.status, "reject");
+  assert.equal(calibrated.calibration.source, "calibrated-high-risk");
+  assert.match(calibrated.result.briefReason, /资金流|主力|高风险/);
+});
+
+test("step15 calibration relaxes non-news high-risk review signals", () => {
+  const calibrated = calibrateStep15Decision(batchItem(22, {
+    status: "review",
+    ruleIds: ["R10"],
+    briefReason: "主力资金复盘需要复核。",
+    evidence: ["主力资金"]
+  }, {
+    contentType: "图文",
+    localRisks: [{ ruleId: "R10", label: "资金流/选股模型", action: "review", evidence: "主力资金" }]
+  }));
+
+  assert.equal(calibrated.result.status, "pass");
+  assert.equal(calibrated.calibration.source, "calibrated-non-news-relaxed-pass");
+});
+
+test("step15 calibration relaxes non-news local false-positive rejects", () => {
+  const calibrated = calibrateStep15Decision(batchItem(23, {
+    status: "reject",
+    ruleIds: ["R3"],
+    briefReason: "命中直接买卖/仓位指令规则，不能投放。",
+    evidence: ["买点，没信号"]
+  }, {
+    contentType: "图文",
+    decisionSource: "local-reject",
+    localRisks: [{ ruleId: "R3", label: "直接买卖/仓位指令", action: "reject", evidence: "买点，没信号" }]
+  }));
+
+  assert.equal(calibrated.result.status, "pass");
+  assert.equal(calibrated.calibration.source, "calibrated-non-news-relaxed-pass");
+});
+
+test("step15 calibration keeps explicit hard violations rejected even outside news", () => {
+  const calibrated = calibrateStep15Decision(batchItem(24, {
+    status: "reject",
+    ruleIds: ["R1"],
+    briefReason: "命中股票代码和具体荐股，不能投放。",
+    evidence: ["600519"]
+  }, {
+    contentType: "图文",
+    title: "600519 今日买点",
+    decisionSource: "local-reject",
+    localRisks: [{ ruleId: "R1", label: "股票代码/具体荐股", action: "reject", evidence: "600519" }]
+  }));
+
+  assert.equal(calibrated.result.status, "reject");
+});
+
+test("step15 calibration keeps provider and asset failures in review", () => {
+  const providerError = calibrateStep15Decision(batchItem(3, {
+    status: "review",
+    ruleIds: [],
+    briefReason: "模型筛选失败，需人工复核。",
+    evidence: ["quota exceeded"]
+  }, {
+    decisionSource: "provider-error"
+  }));
+  const assetError = calibrateStep15Decision(batchItem(4, {
+    status: "review",
+    ruleIds: [],
+    briefReason: "素材抽取失败，需人工复核。",
+    evidence: ["missing asset"]
+  }, {
+    decisionSource: "asset-error"
+  }));
+
+  assert.equal(providerError.result.status, "review");
+  assert.equal(providerError.calibration.source, "calibrated-failure-review");
+  assert.equal(assetError.result.status, "review");
+  assert.equal(assetError.calibration.source, "calibrated-failure-review");
+});
+
+test("step15 calibration does not use historical expected labels", () => {
+  const historicalPassButHighRisk = calibrateStep15Decision(batchItem(5, {
+    status: "review",
+    ruleIds: ["R10"],
+    briefReason: "主力资金净流入榜单需要复核。",
+    evidence: ["主力净流入"]
+  }, {
+    contentType: "资讯",
+    expected: "pass",
+    localRisks: [{ ruleId: "R10", label: "资金流/选股模型", action: "review", evidence: "主力净流入" }]
+  }));
+  const historicalRejectButLowRisk = calibrateStep15Decision(batchItem(6, {
+    status: "review",
+    ruleIds: [],
+    briefReason: "泛财经科普，未发现具体荐股、收益承诺或交易指令。",
+    evidence: ["风险教育"]
+  }, {
+    expected: "reject"
+  }));
+
+  assert.equal(historicalPassButHighRisk.result.status, "reject");
+  assert.equal(historicalRejectButLowRisk.result.status, "pass");
+});
+
+test("step15 calibration does not treat negated Qwen pass reasons as high risk", () => {
+  const calibrated = calibrateStep15Decision(batchItem(7, {
+    status: "pass",
+    ruleIds: [],
+    briefReason: "未发现具体荐股、收益承诺或交易指令，属于低风险素材。",
+    evidence: ["无具体荐股、收益承诺或交易指令"]
+  }, {
+    localRisks: [{ ruleId: "P2", label: "账号历史通过率先验", action: "review", evidence: "账号：问财" }]
+  }));
+
+  assert.equal(calibrated.result.status, "pass");
+  assert.equal(calibrated.calibration.source, "calibrated-qwen-pass");
+});
+
+test("step15 calibration keeps generic R12 finance reviews out of automatic reject", () => {
+  const calibrated = calibrateStep15Decision(batchItem(8, {
+    status: "review",
+    ruleIds: ["R12"],
+    briefReason: "理财知识分享，未发现具体荐股、收益承诺或交易指令。",
+    evidence: ["理财知识"]
+  }, {
+    localRisks: [{ ruleId: "R12", label: "理财/财富自由/投资书单", action: "review", evidence: "理财" }]
+  }));
+
+  assert.equal(calibrated.result.status, "pass");
+  assert.equal(calibrated.calibration.source, "calibrated-likely-pass");
 });
 
 test("news content scores R10 and R12 higher than non-news with the same rules", () => {
@@ -527,10 +682,11 @@ test("cleanDailyStep15 applies the default batch pass quota", async () => {
   });
 
   assert.equal(result.summary.douyin.total, 30);
-  assert.equal(result.summary.douyin.pass, 12);
-  assert.equal(result.summary.douyin.review, 18);
+  assert.equal(result.summary.douyin.pass, 30);
+  assert.equal(result.summary.douyin.review, 0);
+  assert.equal(result.details.filter((item) => item.quota?.selected).length, 12);
   const replaceCall = calls.find((call) => call[0] === "replaceSheetRows");
-  assert.equal(replaceCall[2].filter((row) => row[1] === "05 19").length, 12);
+  assert.equal(replaceCall[2].filter((row) => row[1] === "05 19").length, 30);
 });
 
 test("package exposes clean daily CLI script", async () => {
@@ -694,7 +850,7 @@ test("cleanDailyStep15 defaults to filtering Douyin only", async () => {
   assert.equal(manifest.link, "https://www.douyin.com/video/pass1");
 });
 
-test("cleanDailyStep15 sends review signals to the provider instead of hard rejecting", async () => {
+test("cleanDailyStep15 sends review signals to the provider before calibration", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "step15-review-signal-"));
   const calls = [];
   const seenProviderSignals = [];
@@ -777,6 +933,12 @@ test("cleanDailyStep15 writes template-backed feedback and filtered rows below t
     async replaceSheetDataRows(sheetKey, rows, columnCount) {
       calls.push(["replaceSheetDataRows", sheetKey, rows, columnCount]);
     },
+    async clearMaterialRowHighlights(sheetKey, rowRanges) {
+      calls.push(["clearMaterialRowHighlights", sheetKey, rowRanges]);
+    },
+    async highlightSeparatorRows(sheetKey, rowNumbers) {
+      calls.push(["highlightSeparatorRows", sheetKey, rowNumbers]);
+    },
     sheetId(platformId) {
       return platformId === "douyin" ? "dySheet" : "filteredSheet";
     },
@@ -805,6 +967,7 @@ test("cleanDailyStep15 writes template-backed feedback and filtered rows below t
   const replaceCall = calls.find((call) => call[0] === "replaceSheetDataRows");
   assert.ok(replaceCall);
   assert.equal(replaceCall[1], "step15");
-  assert.equal(replaceCall[2][0][1], "05 19");
-  assert.equal(replaceCall[2][1][1], "05 18");
+  assert.deepEqual(replaceCall[2].map((row) => row[1]), ["0519 投稿视频", "05 19", "0518 投稿视频", "05 18"]);
+  const highlightCall = calls.find((call) => call[0] === "highlightSeparatorRows");
+  assert.deepEqual(highlightCall, ["highlightSeparatorRows", "step15", [5, 7]]);
 });

@@ -5,7 +5,7 @@ import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
 export const PLATFORM_HEADERS = {
   douyin: ["编号", "投稿时间", "内容链接", "标题", "tag词", "筛选状态", "简短理由", "账号", "内容类型", "内容类型标签审核", "本地素材目录"],
   xhs: ["编号", "投稿时间", "内容链接", "笔记ID", "账号", "内容类型", "内容类型标签审核", "tag词"],
-  bilibili: ["编号", "投稿时间", "内容链接", "短链id", "账号"],
+  bilibili: ["编号", "投稿时间", "内容链接", "短链id", "账号", "标题", "tag词"],
   step15: ["编号", "投稿时间", "内容链接", "账号", "内容类型", "简短理由", "是否投放成功", "是否为爆款", "供稿人", "备注"]
 };
 
@@ -13,6 +13,9 @@ export const PLATFORM_LEGACY_HEADERS = {
   douyin: [
     ["编号", "投稿时间", "内容链接", "账号", "内容类型", "内容类型标签审核", "标题", "tag词", "筛选状态", "命中规则", "简短理由", "本地素材目录"],
     ["编号", "投稿时间", "内容链接", "账号", "内容类型", "内容类型标签审核", "标题", "tag词"]
+  ],
+  bilibili: [
+    ["编号", "投稿时间", "内容链接", "短链id", "账号"]
   ],
   step15: [
     ["平台", "编号", "投稿时间", "内容链接", "账号", "内容类型", "标题", "tag词", "筛选状态", "命中规则", "简短理由", "本地素材目录"],
@@ -135,7 +138,9 @@ export function mapDailyRecordToFeishuFields(platformId, record) {
     "投稿时间": record.displayDate || formatDisplayDate(record.targetDate),
     "内容链接": record.link || "",
     "短链id": record.id || extractBilibiliBv(record.link),
-    "账号": normalizeAccountLabel(platformId, record.accountName || "同花顺投资")
+    "账号": normalizeAccountLabel(platformId, record.accountName || "同花顺投资"),
+    "标题": spreadsheetSafeText(record.title || ""),
+    "tag词": spreadsheetSafeText(record.tags || "")
   };
 }
 
@@ -233,7 +238,7 @@ export function materialKeyFromRecord(platformId, record) {
   return link || "";
 }
 
-function materialKeyFromFields(platformId, fields) {
+export function materialKeyFromFields(platformId, fields) {
   const link = canonicalizeContentLink(platformId, extractFeishuCellLink(fields["内容链接"]));
   if (platformId === "xhs") return fields["笔记ID"] || extractXhsNoteId(link) || link || "";
   if (platformId === "bilibili") return fields["短链id"] || extractBilibiliBv(link) || link || "";
@@ -262,6 +267,6 @@ function isDropdownHeader(platformId, header) {
   return (PLATFORM_DROPDOWN_COLUMNS[platformId] || []).some((column) => column.header === header);
 }
 
-function rowToFields(platformId, row) {
+export function rowToFields(platformId, row) {
   return Object.fromEntries(PLATFORM_HEADERS[platformId].map((header, index) => [header, row[index] || ""]));
 }
