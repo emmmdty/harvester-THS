@@ -87,6 +87,8 @@ export function buildDailySheetRecords(platformId, targetDate, items) {
       publishedAt: item.publishedAt || targetDate
     }));
 
+  if (materialRows.length === 0) return [];
+
   return [
     {
       kind: "separator",

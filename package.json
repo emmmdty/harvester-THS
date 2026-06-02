@@ -16,9 +16,11 @@
     "feishu:template": "node src/apply-feishu-template.mjs",
     "import:excel-history": "node src/excel-history-importer.mjs",
     "repair:content-types": "node src/repair-content-types.mjs",
+    "repair:feishu-content": "node src/repair-feishu-content.mjs",
     "doctor": "node src/doctor.mjs",
     "prod:check": "node src/prod-check.mjs",
     "cleanup:dry-run": "node src/cleanup-runtime.mjs",
+    "package:release": "node scripts/package-release.mjs",
     "ui": "node src/server.mjs",
     "test": "node --test"
   },

@@ -2,32 +2,35 @@ const PLATFORMS = {
   xhs: {
     eyebrow: "Xiaohongshu Crawler",
     title: "小红书作品采集",
-    loginText: "打开小红书登录"
+    loginText: "打开小红书登录",
+    accountHint: "https://www.xiaohongshu.com/user/profile/..."
   },
   douyin: {
     eyebrow: "Douyin Crawler",
     title: "抖音作品采集",
-    loginText: "打开抖音登录"
+    loginText: "打开抖音登录",
+    accountHint: "https://www.douyin.com/user/..."
   },
   bilibili: {
     eyebrow: "Bilibili Crawler",
     title: "B站作品采集",
-    loginText: "打开B站登录"
+    loginText: "打开B站登录",
+    accountHint: "https://space.bilibili.com/..."
   },
   daily: {
     eyebrow: "Daily Collector",
     title: "全渠道每日采集",
-    loginText: "无需登录"
+    loginText: "无需登录",
+    accountHint: ""
   }
 };
 
 const sinceInput = document.querySelector("#since");
 const untilInput = document.querySelector("#until");
 const untilField = document.querySelector("#until-field");
-const accountField = document.querySelector("#account-field");
-const accountSelect = document.querySelector("#account");
 const crawlModeSelect = document.querySelector("#crawl-mode");
 const targetDateInput = document.querySelector("#target-date");
+const schedulebarEl = document.querySelector("#schedulebar");
 const dateLabelEl = document.querySelector("#date-label");
 const loginButton = document.querySelector("#login");
 const loginCheckButton = document.querySelector("#login-check");
@@ -48,18 +51,19 @@ const statusEl = document.querySelector("#status");
 const eyebrowEl = document.querySelector("#eyebrow");
 const titleEl = document.querySelector("#title");
 const platformButtons = [...document.querySelectorAll(".platform-tab")];
-const authPanel = document.querySelector("#auth-panel");
-const panelContent = document.querySelector("#panel-content");
-const panelPasswordInput = document.querySelector("#panel-password");
-const panelLoginButton = document.querySelector("#panel-login");
-const panelAuthStatusEl = document.querySelector("#panel-auth-status");
+const accountManagerEl = document.querySelector("#account-manager");
+const accountNameInput = document.querySelector("#account-name");
+const accountUrlInput = document.querySelector("#account-url");
+const saveAccountButton = document.querySelector("#save-account");
+const accountListEl = document.querySelector("#account-list");
+const accountStatusEl = document.querySelector("#account-status");
 
 let currentPlatform = "xhs";
 let logs = [];
 let loginCheckingPlatform = "";
-let xhsAccountsLoaded = false;
 let events = null;
 let panelInitialized = false;
+let currentAccounts = [];
 const loginCheckState = {};
 const autoCheckedPlatforms = new Set();
 let runState = {
@@ -70,19 +74,13 @@ let runState = {
   loginChecking: false
 };
 
-panelLoginButton.addEventListener("click", handlePanelLogin);
-panelPasswordInput.addEventListener("keydown", async (event) => {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  await handlePanelLogin();
-});
-
 platformButtons.forEach((button) => {
   button.addEventListener("click", async () => {
     currentPlatform = button.dataset.platform;
     renderPlatform();
     await loadStatus();
     await loadOutputs();
+    await loadAccounts(currentPlatform);
   });
 });
 
@@ -103,14 +101,12 @@ runButton.addEventListener("click", async () => {
     return;
   }
 
-  const body = currentPlatform === "daily"
-    ? { platform: currentPlatform, since, until, mode: crawlModeSelect.value }
-    : { platform: currentPlatform, since, until, mode: crawlModeSelect.value };
-  if (currentPlatform === "xhs" && accountSelect.value) {
-    body.account = accountSelect.value;
-  }
-
-  const result = await postJson("/api/crawl", body);
+  const result = await postJson("/api/crawl", {
+    platform: currentPlatform,
+    since,
+    until,
+    mode: crawlModeSelect.value
+  });
   if (result?.error) appendLocalLog(result.error);
 });
 
@@ -125,16 +121,11 @@ feishuWriteButton.addEventListener("click", async () => {
     return;
   }
 
-  const body = {
+  const result = await postJson("/api/feishu/write", {
     platform: currentPlatform,
     since,
     until
-  };
-  if (currentPlatform === "xhs" && accountSelect.value) {
-    body.account = accountSelect.value;
-  }
-
-  const result = await postJson("/api/feishu/write", body);
+  });
   if (result?.error) appendLocalLog(result.error);
 });
 
@@ -173,6 +164,22 @@ saveScheduleButton.addEventListener("click", async () => {
   if (data && !data.error) renderScheduler(data);
 });
 
+saveAccountButton.addEventListener("click", async () => {
+  await saveAccount();
+});
+
+accountNameInput.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  accountUrlInput.focus();
+});
+
+accountUrlInput.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  await saveAccount();
+});
+
 sinceInput.addEventListener("change", () => {
   if (!untilInput.value || untilInput.value <= sinceInput.value) {
     untilInput.value = addDaysToDateString(sinceInput.value, 1);
@@ -184,74 +191,18 @@ const defaultSinceDate = previousDateString();
 sinceInput.value = sinceInput.value || defaultSinceDate;
 untilInput.value = untilInput.value || today;
 targetDateInput.value = targetDateInput.value || defaultSinceDate;
-await initializeAuth();
-
-async function initializeAuth() {
-  panelContent.hidden = true;
-  authPanel.hidden = true;
-  const auth = await fetchJson("/api/auth/status", { allowUnauthorized: true });
-  if (auth?.authRequired && !auth.authenticated) {
-    showAuth("请输入共享口令");
-    return;
-  }
-  await initializePanel();
-}
-
-async function handlePanelLogin() {
-  const password = panelPasswordInput.value;
-  panelLoginButton.disabled = true;
-  panelAuthStatusEl.textContent = "登录中...";
-  panelAuthStatusEl.classList.remove("error");
-  try {
-    const response = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password })
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      showAuth(data.error || "口令错误。");
-      return;
-    }
-    panelPasswordInput.value = "";
-    await initializePanel();
-  } catch (error) {
-    showAuth(error.message || String(error));
-  } finally {
-    panelLoginButton.disabled = false;
-  }
-}
+await initializePanel();
 
 async function initializePanel() {
-  if (panelInitialized) {
-    authPanel.hidden = true;
-    panelContent.hidden = false;
-    return;
-  }
+  if (panelInitialized) return;
   panelInitialized = true;
-  authPanel.hidden = true;
-  panelContent.hidden = false;
   openEvents();
   renderPlatform();
   await loadStatus();
   await loadOutputs();
   await loadScheduler();
+  await loadAccounts(currentPlatform);
   void autoCheckLogin(currentPlatform);
-}
-
-function showAuth(message) {
-  panelInitialized = false;
-  if (events) {
-    events.close();
-    events = null;
-  }
-  panelContent.hidden = true;
-  authPanel.hidden = false;
-  panelAuthStatusEl.textContent = message || "请输入共享口令";
-  panelAuthStatusEl.classList.toggle("error", Boolean(message && message !== "请输入共享口令"));
-  statusEl.textContent = "需要口令";
-  statusEl.classList.remove("running");
-  panelPasswordInput.focus();
 }
 
 function openEvents() {
@@ -298,7 +249,7 @@ function openEvents() {
     }
   };
   events.onerror = () => {
-    showAuth("面板会话已失效，请重新登录。");
+    appendLocalLog("事件连接已断开，刷新页面可重新连接。");
   };
 }
 
@@ -321,24 +272,69 @@ async function loadOutputs() {
   renderOutputs(data.files || []);
 }
 
-async function loadAccounts() {
-  if (xhsAccountsLoaded) return;
+async function loadAccounts(platformId) {
+  if (platformId === "daily") {
+    currentAccounts = [];
+    renderAccounts();
+    return;
+  }
 
   try {
-    const data = await fetchJson("/api/accounts?platform=xhs");
-    const accounts = data.accounts || [];
-    const previousValue = accountSelect.value;
-    accountSelect.replaceChildren(
-      new Option("全部账号", ""),
-      ...accounts.map((account) => new Option(account.name, account.name))
-    );
-    if ([...accountSelect.options].some((option) => option.value === previousValue)) {
-      accountSelect.value = previousValue;
-    }
-    xhsAccountsLoaded = true;
+    const data = await fetchJson(`/api/accounts?platform=${encodeURIComponent(platformId)}`);
+    currentAccounts = data.accounts || [];
+    renderAccounts();
   } catch (error) {
-    appendLocalLog(`读取小红书账号列表失败：${error.message || String(error)}`);
+    accountStatusEl.textContent = `读取账号失败：${error.message || String(error)}`;
+    accountStatusEl.classList.add("error");
   }
+}
+
+async function saveAccount() {
+  if (currentPlatform === "daily") return;
+  const name = accountNameInput.value.trim();
+  const url = accountUrlInput.value.trim();
+  if (!name) {
+    accountNameInput.focus();
+    accountStatusEl.textContent = "请输入账号名称。";
+    accountStatusEl.classList.add("error");
+    return;
+  }
+  if (!url) {
+    accountUrlInput.focus();
+    accountStatusEl.textContent = "请输入主页链接。";
+    accountStatusEl.classList.add("error");
+    return;
+  }
+
+  const result = await postJson("/api/accounts/upsert", {
+    platform: currentPlatform,
+    name,
+    url
+  });
+  if (result?.error) {
+    accountStatusEl.textContent = result.error;
+    accountStatusEl.classList.add("error");
+    return;
+  }
+
+  accountNameInput.value = "";
+  accountUrlInput.value = "";
+  currentAccounts = result.accounts || [];
+  renderAccounts();
+}
+
+async function deleteAccount(name) {
+  const result = await postJson("/api/accounts/delete", {
+    platform: currentPlatform,
+    name
+  });
+  if (result?.error) {
+    accountStatusEl.textContent = result.error;
+    accountStatusEl.classList.add("error");
+    return;
+  }
+  currentAccounts = result.accounts || [];
+  renderAccounts();
 }
 
 async function loadScheduler() {
@@ -386,10 +382,6 @@ async function postJson(url, body) {
       body: JSON.stringify(body)
     });
     const data = await response.json();
-    if (response.status === 401) {
-      showAuth(data.error || "面板会话已失效，请重新登录。");
-      return data;
-    }
     if (!response.ok && data.error) appendLocalLog(data.error);
     return data;
   } catch (error) {
@@ -398,13 +390,10 @@ async function postJson(url, body) {
   }
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(url) {
   const response = await fetch(url);
   const data = await response.json();
-  if (response.status === 401 && !options.allowUnauthorized) {
-    showAuth(data.error || "面板会话已失效，请重新登录。");
-    throw new Error(data.error || "未登录");
-  }
+  if (!response.ok) throw new Error(data.error || `请求失败：${response.status}`);
   return data;
 }
 
@@ -415,10 +404,13 @@ function renderPlatform() {
   loginButton.textContent = config.loginText;
   dateLabelEl.textContent = "开始日期（含）";
   untilField.hidden = false;
-  accountField.hidden = currentPlatform !== "xhs";
   feishuWriteButton.hidden = currentPlatform === "daily";
   loginCheckButton.hidden = currentPlatform === "daily";
   loginCheckStatusEl.hidden = currentPlatform === "daily";
+  schedulebarEl.hidden = currentPlatform !== "daily";
+  accountManagerEl.hidden = currentPlatform === "daily";
+  accountUrlInput.placeholder = config.accountHint || "";
+
   if (currentPlatform === "daily") {
     if (!sinceInput.value) sinceInput.value = targetDateInput.value || previousDateString();
     if (!untilInput.value || untilInput.value <= sinceInput.value) {
@@ -432,7 +424,6 @@ function renderPlatform() {
   });
   renderLoginCheckStatus();
   setRunning();
-  if (currentPlatform === "xhs") void loadAccounts();
   void autoCheckLogin(currentPlatform);
 }
 
@@ -447,10 +438,10 @@ function setRunning() {
   loginButton.disabled = currentPlatform === "daily" || busy;
   loginCheckButton.disabled = currentPlatform === "daily" || Boolean(loginCheckingPlatform) || busy;
   feishuWriteButton.disabled = currentPlatform === "daily" || busy;
-  accountSelect.disabled = currentPlatform !== "xhs" || busy;
   crawlModeSelect.disabled = busy;
   dailyRunButton.disabled = busy;
   saveScheduleButton.disabled = busy;
+  saveAccountButton.disabled = currentPlatform === "daily" || busy;
   statusEl.classList.toggle("running", busy);
 
   if (runningThisPlatform) {
@@ -480,6 +471,65 @@ function renderScheduler(data) {
   scheduleEnabledInput.checked = Boolean(data.enabled);
   scheduleStatusEl.textContent = data.enabled ? `已启用 ${data.time}` : "未启用";
   scheduleStatusEl.classList.toggle("active", Boolean(data.enabled));
+}
+
+function renderAccounts() {
+  accountStatusEl.classList.remove("error");
+  accountStatusEl.textContent = currentPlatform === "daily"
+    ? "全渠道使用各平台账号"
+    : `已配置 ${currentAccounts.length} 个账号`;
+
+  if (currentPlatform === "daily") {
+    accountListEl.replaceChildren();
+    return;
+  }
+
+  if (!currentAccounts.length) {
+    accountListEl.innerHTML = `<div class="empty">暂无账号</div>`;
+    return;
+  }
+
+  accountListEl.replaceChildren(...currentAccounts.map((account) => {
+    const item = document.createElement("div");
+    item.className = "account-item";
+
+    const text = document.createElement("div");
+    text.className = "account-text";
+
+    const name = document.createElement("div");
+    name.className = "account-name";
+    name.textContent = account.name;
+
+    const url = document.createElement("div");
+    url.className = "account-url";
+    url.textContent = account.url;
+
+    const actions = document.createElement("div");
+    actions.className = "account-actions";
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "ghost";
+    editButton.textContent = "编辑";
+    editButton.addEventListener("click", () => {
+      accountNameInput.value = account.name;
+      accountUrlInput.value = account.url;
+      accountUrlInput.focus();
+    });
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "danger";
+    deleteButton.textContent = "删除";
+    deleteButton.addEventListener("click", () => {
+      void deleteAccount(account.name);
+    });
+
+    text.append(name, url);
+    actions.append(editButton, deleteButton);
+    item.append(text, actions);
+    return item;
+  }));
 }
 
 function appendLocalLog(line) {

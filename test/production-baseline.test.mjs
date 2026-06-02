@@ -8,7 +8,7 @@ import { planRuntimeCleanup } from "../src/runtime-cleanup.mjs";
 import { runProductionCheck } from "../src/prod-checker.mjs";
 import { recordSchedulerRun, readSchedulerRunHistory } from "../src/scheduler-run-history.mjs";
 
-test("production check keeps LAN password optional but reports missing runtime prerequisites", async () => {
+test("production check reports missing runtime prerequisites without shared password checks", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-prod-check-"));
   await fs.writeFile(path.join(root, ".env"), "FEISHU_APP_ID=app\n", "utf8");
   const result = await runProductionCheck({
@@ -27,7 +27,7 @@ test("production check keeps LAN password optional but reports missing runtime p
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.checks.find((check) => check.id === "lan_password").status, "ok");
+  assert.equal(result.checks.some((check) => check.id === "lan_password"), false);
   assert.equal(result.checks.find((check) => check.id === "profiles").status, "fail");
   assert.match(result.summary, /检查未通过/);
 });

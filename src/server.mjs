@@ -10,16 +10,13 @@ import { isDocker } from "./browser-env.mjs";
 import { addDaysToDateString, endExclusiveDateToInclusiveUntilDate, normalizeDateInput, previousDateString } from "./date-utils.mjs";
 import { writePlatformJsonToFeishu } from "./feishu-writer.mjs";
 import { checkPlatformLogin, summarizeLoginCheckResults } from "./login-check.mjs";
+import { deletePlatformAccount, readPlatformAccounts, upsertPlatformAccount } from "./platform-accounts.mjs";
 import { recordSchedulerRun } from "./scheduler-run-history.mjs";
-import { loadXhsAccounts, selectXhsAccounts } from "./xhs-accounts.mjs";
 import { normalizeCrawlMode } from "./crawl-runtime.mjs";
 import {
-  assertPanelPasswordConfig,
-  createPanelAuth,
-  isProtectedPanelPath,
   resolvePanelPlatform,
   validatePostOrigin
-} from "./panel-auth.mjs";
+} from "./panel-security.mjs";
 
 const ROOT = process.cwd();
 const PORT = Number(process.env.PORT || 3000);
@@ -69,9 +66,6 @@ const PLATFORMS = {
   }
 };
 
-assertPanelPasswordConfig({ host: HOST, panelPassword: process.env.PANEL_PASSWORD });
-const panelAuth = createPanelAuth({ panelPassword: process.env.PANEL_PASSWORD || "" });
-
 let currentRun = null;
 let loginProcess = null;
 let loginCheckRunning = false;
@@ -88,44 +82,6 @@ const server = http.createServer(async (req, res) => {
     if (!originGate.ok) {
       sendJson(res, { error: originGate.error }, originGate.status);
       return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/auth/status") {
-      const authResult = panelAuth.authenticateRequest(req);
-      sendJson(res, {
-        authRequired: panelAuth.isEnabled(),
-        authenticated: !panelAuth.isEnabled() || authResult.ok
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/auth/login") {
-      const body = await readJson(req);
-      const result = panelAuth.login(body?.password);
-      if (!result.ok) {
-        sendJson(res, { error: result.error }, result.status);
-        return;
-      }
-      sendJson(res, {
-        ok: true,
-        authRequired: panelAuth.isEnabled(),
-        authenticated: true
-      }, 200, result.cookie ? { "Set-Cookie": result.cookie } : {});
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-      const result = panelAuth.logout(req);
-      sendJson(res, { ok: true, authenticated: false }, 200, { "Set-Cookie": result.cookie });
-      return;
-    }
-
-    if (isProtectedPanelPath(url.pathname)) {
-      const authResult = panelAuth.authenticateRequest(req);
-      if (!authResult.ok) {
-        sendJson(res, { error: authResult.error }, authResult.status);
-        return;
-      }
     }
 
     if (req.method === "GET" && url.pathname === "/api/events") {
@@ -148,6 +104,31 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/accounts") {
       const platform = getPlatform(url.searchParams.get("platform"));
       await listAccounts(res, platform);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/accounts/upsert") {
+      const body = await readJson(req);
+      const platform = getPlatform(body?.platform);
+      const account = await upsertPlatformAccount({
+        root: ROOT,
+        platformId: platform.id,
+        name: body?.name,
+        url: body?.url
+      });
+      sendJson(res, { ok: true, platform: platform.id, account, accounts: await readPlatformAccounts(platform.id, { root: ROOT }) });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/accounts/delete") {
+      const body = await readJson(req);
+      const platform = getPlatform(body?.platform);
+      await deletePlatformAccount({
+        root: ROOT,
+        platformId: platform.id,
+        name: body?.name
+      });
+      sendJson(res, { ok: true, platform: platform.id, accounts: await readPlatformAccounts(platform.id, { root: ROOT }) });
       return;
     }
 
@@ -213,6 +194,15 @@ const server = http.createServer(async (req, res) => {
     console.error(error);
     sendJson(res, { error: error.message || String(error) }, error.status || 500);
   }
+});
+
+server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.error(`面板端口已被占用：${HOST}:${PORT}。请关闭占用该端口的程序，或设置 PORT 使用其它端口。`);
+  } else {
+    console.error(error);
+  }
+  process.exitCode = 1;
 });
 
 server.listen(PORT, HOST, () => {
@@ -324,15 +314,6 @@ async function startCrawl(res, platform, body) {
     return;
   }
 
-  if (platform.profileDir) {
-    const profileReady = await ensureProfileReady(platform);
-    if (!profileReady.ok) {
-      appendLog(platform.id, profileReady.message);
-      sendJson(res, { error: profileReady.message }, 409);
-      return;
-    }
-  }
-
   const dateInput = String(body?.targetDate || body?.since || "").trim();
   let sinceDate;
   let endExclusiveDate;
@@ -352,16 +333,18 @@ async function startCrawl(res, platform, body) {
   }
   const crawlMode = normalizeCrawlMode(body?.mode);
 
-  let accountFilter = "";
-  if (platform.id === "xhs") {
-    accountFilter = String(body?.account || "").trim();
-    if (accountFilter) {
-      try {
-        selectXhsAccounts(await loadXhsAccounts(ROOT), accountFilter);
-      } catch (error) {
-        sendJson(res, { error: error.message || String(error) }, 400);
-        return;
-      }
+  const accountGate = await checkPlatformAccountConfig(platform);
+  if (!accountGate.ok) {
+    sendJson(res, { error: accountGate.message }, 400);
+    return;
+  }
+
+  if (platform.profileDir) {
+    const profileReady = await ensureProfileReady(platform);
+    if (!profileReady.ok) {
+      appendLog(platform.id, profileReady.message);
+      sendJson(res, { error: profileReady.message }, 409);
+      return;
     }
   }
 
@@ -375,16 +358,12 @@ async function startCrawl(res, platform, body) {
   }
 
   const rangeText = formatHalfOpenDateRange(sinceDate, endExclusiveDate);
-  const accountText = accountFilter ? `，账号：${accountFilter}` : "";
-  appendLog(platform.id, `启动${platform.label}任务，日期：${rangeText}${accountText}，模式：${modeLabel(crawlMode)}，启动时间：${formatTimestamp()}`);
+  appendLog(platform.id, `启动${platform.label}任务，日期：${rangeText}，模式：${modeLabel(crawlMode)}，启动时间：${formatTimestamp()}`);
 
   const args = platform.id === "daily"
     ? [platform.crawlScript, "--since", sinceDate, "--until", endExclusiveDate]
     : [platform.crawlScript, "--since", sinceDate, "--until", crawlerUntilDate];
   args.push("--mode", crawlMode);
-  if (platform.id === "xhs" && accountFilter) {
-    args.push("--account", accountFilter);
-  }
 
   currentRun = spawn(NODE_BIN, args, {
     cwd: ROOT,
@@ -409,6 +388,22 @@ async function startCrawl(res, platform, body) {
 
   sendJson(res, { ok: true });
   broadcastStatus();
+}
+
+async function checkPlatformAccountConfig(platform) {
+  const platformIds = platform.id === "daily" ? ["xhs", "douyin", "bilibili"] : [platform.id];
+  const missing = [];
+  for (const platformId of platformIds) {
+    const accounts = await readPlatformAccounts(platformId, { root: ROOT });
+    if (accounts.length === 0) missing.push(PLATFORMS[platformId].label);
+  }
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      message: `请先在账号配置中添加${missing.join("、")}账号。`
+    };
+  }
+  return { ok: true };
 }
 
 async function checkDailyPlatformLogins() {
@@ -471,38 +466,23 @@ async function writeFeishu(res, platform, body) {
     return;
   }
 
-  let accountName = "";
-  if (platform.id === "xhs") {
-    accountName = String(body?.account || "").trim();
-    if (accountName) {
-      try {
-        const accounts = selectXhsAccounts(await loadXhsAccounts(ROOT), accountName);
-        accountName = accounts[0]?.name || accountName;
-      } catch (error) {
-        sendJson(res, { error: error.message || String(error) }, 400);
-        return;
-      }
-    }
-  }
-
-  const accountText = accountName ? `，账号：${accountName}` : "";
-  appendLog(platform.id, `${platform.label}开始写入飞书，日期：${formatHalfOpenDateRange(sinceDate, endExclusiveDate)}${accountText}，启动时间：${formatTimestamp()}`);
+  appendLog(platform.id, `${platform.label}开始写入飞书，日期：${formatHalfOpenDateRange(sinceDate, endExclusiveDate)}，启动时间：${formatTimestamp()}`);
   try {
     const result = await writePlatformJsonToFeishu({
       platformId: platform.id,
       sinceDate,
       untilDate: crawlerUntilDate,
-      accountName,
+      accountName: "",
       root: ROOT
     });
     appendLog(
       platform.id,
-      `${platform.label}飞书写入完成${accountText}：采集 ${result.collected}，新增 ${result.feishu.created}，跳过 ${result.feishu.skipped}`
+      `${platform.label}飞书写入完成：采集 ${result.collected}，新增 ${result.feishu.created}，跳过 ${result.feishu.skipped}`
     );
     for (const warning of result.feishu.warnings || []) {
       appendLog(platform.id, `${platform.label}飞书写入提示：${warning}`);
     }
-    sendJson(res, { ok: true, platform: platform.id, sinceDate, endExclusiveDate, crawlerUntilDate, accountName, ...result });
+    sendJson(res, { ok: true, platform: platform.id, sinceDate, endExclusiveDate, crawlerUntilDate, accountName: "", ...result });
   } catch (error) {
     const message = error.message || String(error);
     appendLog(platform.id, `${platform.label}飞书写入失败：${message}`);
@@ -646,17 +626,16 @@ async function listOutputs(platformId = "xhs") {
 }
 
 async function listAccounts(res, platform) {
-  if (platform.id !== "xhs") {
+  if (platform.id === "daily") {
     sendJson(res, { platform: platform.id, accounts: [] });
     return;
   }
 
-  const accounts = await loadXhsAccounts(ROOT);
+  const accounts = await readPlatformAccounts(platform.id, { root: ROOT });
   sendJson(res, {
     platform: platform.id,
     accounts: accounts.map((account) => ({
       name: account.name,
-      aliases: account.aliases || [],
       url: account.url || ""
     }))
   });
@@ -777,6 +756,12 @@ async function startScheduledDailyRun() {
 
   logsByPlatform.set("daily", []);
   appendLog("daily", `定时任务触发，全渠道目标日期：${targetDate}，启动时间：${formatTimestamp()}`);
+  const accountGate = await checkPlatformAccountConfig(PLATFORMS.daily);
+  if (!accountGate.ok) {
+    appendLog("daily", `定时任务已中止：${accountGate.message}`);
+    await recordSchedulerEvent({ status: "skipped", targetDate, reason: accountGate.message, triggeredAt });
+    return;
+  }
   const loginGate = await checkDailyPlatformLogins();
   if (!loginGate.ok) {
     appendLog("daily", `定时任务已中止：${loginGate.message}`);

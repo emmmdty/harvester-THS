@@ -269,6 +269,7 @@ export class FeishuSheetsClient {
     const sheetId = this.sheetId(sheetKey);
     const spreadsheetToken = await this.getSpreadsheetToken();
     const startIndex = Math.max(0, Number(startRow) - 1);
+    await this.ensureSheetRows(sheetKey, startIndex + length);
     return await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/insert_dimension_range`, {
       method: "POST",
       body: JSON.stringify({
@@ -287,6 +288,7 @@ export class FeishuSheetsClient {
     const sheetId = this.sheetId(platformId);
     const spreadsheetToken = await this.getSpreadsheetToken();
     const startIndex = Math.max(1, Number(startRow) - 1);
+    await this.ensureSheetRows(platformId, startIndex + length);
     return await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/insert_dimension_range`, {
       method: "POST",
       body: JSON.stringify({
@@ -297,6 +299,32 @@ export class FeishuSheetsClient {
           endIndex: startIndex + length
         },
         inheritStyle: "BEFORE"
+      })
+    });
+  }
+
+  async ensureSheetRows(sheetKey, requiredRowCount) {
+    const required = Math.ceil(Number(requiredRowCount) || 0);
+    if (required <= 0) return;
+    const current = await this.sheetRowCount(sheetKey);
+    const missing = required - current;
+    if (missing <= 0) return;
+    return await this.addRows(sheetKey, missing);
+  }
+
+  async addRows(sheetKey, length) {
+    const count = Math.ceil(Number(length) || 0);
+    if (count <= 0) return;
+    const sheetId = this.sheetId(sheetKey);
+    const spreadsheetToken = await this.getSpreadsheetToken();
+    return await this.requestJson(`/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(spreadsheetToken)}/dimension_range`, {
+      method: "POST",
+      body: JSON.stringify({
+        dimension: {
+          sheetId,
+          majorDimension: "ROWS",
+          length: count
+        }
       })
     });
   }
@@ -709,16 +737,14 @@ async function renumberTargetDateBatch(platformId, targetDate, client, rows, dat
   const materialRows = materialRowNumbersForTargetDateBatch(platformId, targetDate, rows, dataStartRow);
   if (materialRows.length === 0) return;
 
-  const materialRowSet = new Set(materialRows);
-  const rowStart = materialRows[0];
-  const rowEnd = materialRows.at(-1);
   let sequence = 1;
-  const values = [];
-  for (let rowNumber = rowStart; rowNumber <= rowEnd; rowNumber += 1) {
-    values.push([materialRowSet.has(rowNumber) ? String(sequence++) : ""]);
+  for (const range of rowRangesFromRowNumbers(materialRows)) {
+    const values = [];
+    for (let rowNumber = range.startRow; rowNumber <= range.endRow; rowNumber += 1) {
+      values.push([String(sequence++)]);
+    }
+    await client.writeRows(platformId, `${client.sheetId(platformId)}!A${range.startRow}:A${range.endRow}`, values);
   }
-
-  await client.writeRows(platformId, `${client.sheetId(platformId)}!A${rowStart}:A${rowEnd}`, values);
 }
 
 async function clearTargetDateMaterialRowHighlights(platformId, targetDate, client, rows, dataStartRow = 2) {

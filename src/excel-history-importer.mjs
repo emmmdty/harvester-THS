@@ -5,7 +5,17 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
-import { buildXhsExploreUrl, canonicalizeContentLink, extractBilibiliBv, extractLinkValue, extractXhsNoteId } from "./link-utils.mjs";
+import {
+  buildXhsExploreUrl,
+  canonicalizeContentLink,
+  extractBilibiliBv,
+  extractDouyinItem,
+  extractLinkValue,
+  extractXhsNoteId,
+  isDouyinShortLink,
+  resolveDouyinShortLinkViaRedirect
+} from "./link-utils.mjs";
+import { extractDouyinTitleFromShareText } from "./douyin-detail-text.mjs";
 import { FeishuSheetsClient, loadFeishuConfig, writeDailyPlatformRecords } from "./feishu-sheets.mjs";
 import { normalizeAccountLabel, PLATFORM_HEADERS } from "./daily-records.mjs";
 
@@ -49,12 +59,14 @@ export async function runExcelHistoryImport({
   apply = false,
   style = false,
   client = new FeishuSheetsClient(loadFeishuConfig()),
-  outputDir = path.resolve("output")
+  outputDir = path.resolve("output"),
+  resolveDouyinShortLink = resolveDouyinShortLinkViaRedirect
 } = {}) {
   const selectedPlatforms = normalizePlatforms(platforms);
   const recordsByPlatform = await parseExcelHistoryWorkbook(filePath, { platforms: selectedPlatforms });
   const existingRecordsByPlatform = await readExistingHistoryRecords(client, selectedPlatforms);
   const classification = classifyExcelHistoryRecords({ recordsByPlatform, existingRecordsByPlatform });
+  await resolveDouyinSafeRecordLinks(classification, resolveDouyinShortLink, existingRecordsByPlatform.douyin || []);
 
   let writeResult = null;
   if (apply) {
@@ -75,6 +87,74 @@ export async function runExcelHistoryImport({
     reportPath,
     report
   };
+}
+
+export async function resolveDouyinSafeRecordLinks(classification, resolveDouyinShortLink = resolveDouyinShortLinkViaRedirect, existingRecords = []) {
+  const platform = classification?.platforms?.douyin;
+  if (!platform?.safeRecords?.length) return classification;
+
+  const existingByKey = groupBy(existingRecords.filter((record) => record.key), (record) => record.key);
+  const existingMaterialDates = new Set(existingRecords.map((record) => record.date).filter(Boolean));
+  const existingDouyinTitleAccountKeys = new Set(
+    existingRecords
+      .filter((record) => record.date && record.titleKey)
+      .map((record) => douyinTitleAccountKey(record))
+  );
+  const resolvedRecords = [];
+  for (const record of platform.safeRecords) {
+    const currentLink = String(record.link || "").trim();
+    let candidate = record;
+    const resolvedLink = await resolveDouyinShortLink(currentLink);
+    if (resolvedLink && extractDouyinItem(resolvedLink)) {
+      candidate = {
+        ...record,
+        link: resolvedLink,
+        key: resolvedLink,
+        resolvedFrom: currentLink
+      };
+    } else if (isDouyinShortLink(currentLink)) {
+      platform.needsReview.push(withReason(record, "unresolved_douyin_short_link"));
+      continue;
+    }
+
+    const existingMatches = existingByKey.get(candidate.key) || [];
+    if (existingMatches.length > 0) {
+      const existingDates = uniqueSorted(existingMatches.map((existing) => existing.date).filter(Boolean));
+      if (existingDates.includes(candidate.date)) {
+        platform.skippedExisting.push({
+          ...candidate,
+          existingRows: existingMatches,
+          existingDates,
+          reason: "same_key_same_date"
+        });
+      } else {
+        platform.dateConflicts.push({
+          ...candidate,
+          existingRows: existingMatches,
+          existingDates,
+          reason: "same_key_different_date"
+        });
+      }
+      continue;
+    }
+
+    if (existingMaterialDates.has(candidate.date)
+      && candidate.titleKey
+      && existingDouyinTitleAccountKeys.has(douyinTitleAccountKey(candidate))) {
+      platform.skippedExisting.push({
+        ...candidate,
+        existingRows: existingRecords.filter((existing) => douyinTitleAccountKey(existing) === douyinTitleAccountKey(candidate)),
+        existingDates: [candidate.date],
+        reason: "same_date_same_title_account"
+      });
+      continue;
+    }
+
+    resolvedRecords.push(candidate);
+  }
+
+  platform.safeRecords = resolvedRecords;
+  return classification;
 }
 
 export async function parseExcelHistoryWorkbook(filePath, { platforms = DEFAULT_PLATFORMS } = {}) {
@@ -415,6 +495,8 @@ function parseExcelHistoryDate(value) {
 function parseFeishuDisplayDate(value) {
   const text = cellText(value).trim();
   if (/^\d{4}\s+投稿视频$/.test(text)) return "";
+  const fullDate = text.match(/^(20\d{2})[./-](\d{1,2})[./-](\d{1,2})$/);
+  if (fullDate) return validDate(fullDate[1], fullDate[2], fullDate[3]);
   const match = text.match(/^(\d{1,2})\s+(\d{1,2})$/);
   if (!match) return "";
   return validDate(TARGET_YEAR, match[1], match[2]);
@@ -489,22 +571,7 @@ function firstHttpUrl(value) {
 }
 
 function extractDouyinTitle(value) {
-  const beforeUrl = String(value || "").replace(/https?:\/\/\S+.*$/s, "");
-  const beforeTag = beforeUrl.split("#")[0].trim();
-  const tokens = beforeTag.split(/\s+/).filter(Boolean);
-  const titleTokens = [];
-  let started = false;
-  for (const token of tokens) {
-    const noisy = token.includes("@")
-      || token.includes(":/")
-      || /^\d+(?:\.\d+)?$/.test(token)
-      || /^\d{1,2}\/\d{1,2}$/.test(token)
-      || /^:?\d+(?:am|pm)$/i.test(token);
-    if (!started && noisy) continue;
-    if (/[\u4e00-\u9fff]/.test(token)) started = true;
-    if (started) titleTokens.push(token);
-  }
-  return titleTokens.join(" ").trim();
+  return extractDouyinTitleFromShareText(value);
 }
 
 function extractTags(value) {

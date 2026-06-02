@@ -8,6 +8,7 @@ node_modules/
 .bilibili-profile/
 .runtime/
 output/
+dist/
 coverage/
 .nyc_output/
 playwright-report/

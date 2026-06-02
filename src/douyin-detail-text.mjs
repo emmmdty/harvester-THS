@@ -110,6 +110,10 @@ export function extractDouyinTitle({ itemText = "", titleText = "", shareText = 
   return "";
 }
 
+export function extractDouyinTitleFromShareText(value) {
+  return removeShareCodePrefix(cleanTitleLine(value));
+}
+
 function extractTitleFromSource(source) {
   const lines = normalizeText(source)
     .split(/\n+/)
@@ -145,11 +149,40 @@ function cleanTitleLine(line) {
 }
 
 function removeShareCodePrefix(line) {
-  return line
+  return stripSharePrefixTokens(line)
     .replace(/^[\d.]+\s+[A-Za-z]@[A-Za-z0-9._-]+\s+\d{2}\/\d{2}\s+\S+\s+\S+\s+/u, "")
     .replace(/^[A-Za-z0-9._-]+\s+[A-Za-z]@[A-Za-z0-9._-]+\s+\d{2}\/\d{2}\s+\S+\s+\S+\s+/u, "")
     .replace(/^[\s:：,，.。;；!！?？/\\|_-]+|[\s:：,，;；/\\|_-]+$/g, "")
     .trim();
+}
+
+function stripSharePrefixTokens(line) {
+  const tokens = String(line || "").split(/\s+/u);
+  const firstContentIndex = tokens.findIndex((token) => /[\p{Script=Han}]/u.test(token));
+  if (firstContentIndex <= 0) return String(line || "");
+
+  const prefixTokens = tokens.slice(0, firstContentIndex);
+  if (prefixTokens.every(isDouyinSharePrefixToken)) {
+    let titleStartIndex = firstContentIndex;
+    while (titleStartIndex > 0 && isNumericTitlePrefixToken(tokens[titleStartIndex - 1])) {
+      titleStartIndex -= 1;
+    }
+    return tokens.slice(titleStartIndex).join(" ");
+  }
+  return String(line || "");
+}
+
+function isNumericTitlePrefixToken(token) {
+  return /^\d+(?:\.\d+)?[%％]?$/u.test(String(token || ""));
+}
+
+function isDouyinSharePrefixToken(token) {
+  return /^[\d.]+$/u.test(token)
+    || /^[A-Za-z]@[A-Za-z0-9._-]+$/u.test(token)
+    || /^[A-Za-z0-9._-]+:\/$/u.test(token)
+    || /^:?\d+(?:am|pm)$/iu.test(token)
+    || /^\d{1,2}\/\d{1,2}$/u.test(token)
+    || /^[A-Za-z0-9._-]+$/u.test(token);
 }
 
 function isMetadataLine(line) {

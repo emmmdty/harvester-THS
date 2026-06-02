@@ -16,16 +16,7 @@
         <div class="status" id="status">待命</div>
       </section>
 
-      <section class="auth-panel" id="auth-panel" hidden>
-        <label class="field auth-field">
-          <span>共享口令</span>
-          <input id="panel-password" type="password" autocomplete="current-password">
-        </label>
-        <button id="panel-login" type="button" class="primary">登录面板</button>
-        <div class="auth-status" id="panel-auth-status">请输入共享口令</div>
-      </section>
-
-      <div id="panel-content" hidden>
+      <div id="panel-content">
         <section class="platform-tabs" aria-label="平台切换">
           <button id="platform-xhs" type="button" class="platform-tab active" data-platform="xhs">小红书</button>
           <button id="platform-douyin" type="button" class="platform-tab" data-platform="douyin">抖音</button>
@@ -42,12 +33,6 @@
             <label class="field" id="until-field">
               <span>结束日期（不含）</span>
               <input id="until" type="date">
-            </label>
-            <label class="field" id="account-field">
-              <span>账号</span>
-              <select id="account">
-                <option value="">全部账号</option>
-              </select>
             </label>
             <label class="field">
               <span>采集模式</span>
@@ -67,7 +52,7 @@
           <div class="login-check-status" id="login-check-status">未检测</div>
         </section>
 
-        <section class="schedulebar" aria-label="每日采集设置">
+        <section class="schedulebar" id="schedulebar" hidden aria-label="每日采集设置">
           <label class="field">
             <span>全渠道日期</span>
             <input id="target-date" type="date">
@@ -102,6 +87,27 @@
             <div id="outputs" class="outputs"></div>
           </div>
         </section>
+
+        <details class="account-manager" id="account-manager" aria-label="账号配置">
+          <summary class="account-manager-title">
+            <h2>账号配置</h2>
+            <div class="account-status" id="account-status">未加载</div>
+          </summary>
+          <div class="account-manager-body">
+            <div class="account-form">
+              <label class="field">
+                <span>账号名称</span>
+                <input id="account-name" type="text" autocomplete="off">
+              </label>
+              <label class="field account-url-field">
+                <span>主页链接</span>
+                <input id="account-url" type="url" autocomplete="off">
+              </label>
+              <button id="save-account" type="button" class="primary">保存账号</button>
+            </div>
+            <div id="account-list" class="account-list"></div>
+          </div>
+        </details>
       </div>
     </main>
 

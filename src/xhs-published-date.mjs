@@ -1,34 +1,20 @@
 import { formatDate, parsePublishedDateText } from "./date-utils.mjs";
+import { publishedDateFromXhsNoteId } from "./content-identity.mjs";
 
-export const XHS_DETAIL_CACHE_VERSION = 2;
+export const XHS_DETAIL_CACHE_VERSION = 3;
 
-export function resolveXhsPublishedAt({ detailPublishedAt, statePublishedAt, detailBlocked = false }) {
-  return resolveXhsPublishedAtEntry({ detailPublishedAt, statePublishedAt, detailBlocked }).publishedAt;
+export function resolveXhsPublishedAt({ noteId = "" } = {}) {
+  return resolveXhsPublishedAtEntry({ noteId }).publishedAt;
 }
 
 export function resolveXhsPublishedAtEntry({
-  detailPublishedAt,
-  detailPublishedAtSource = "",
-  statePublishedAt,
-  statePublishedAtSource = "",
-  detailBlocked = false
+  noteId = ""
 }) {
-  if (detailBlocked) {
+  const noteIdPublishedAt = publishedDateFromXhsNoteId(noteId);
+  if (noteIdPublishedAt) {
     return {
-      publishedAt: null,
-      source: ""
-    };
-  }
-  if (detailPublishedAt) {
-    return {
-      publishedAt: detailPublishedAt,
-      source: detailPublishedAtSource || "detail"
-    };
-  }
-  if (statePublishedAt) {
-    return {
-      publishedAt: statePublishedAt,
-      source: statePublishedAtSource || "state"
+      publishedAt: parseDateOnly(noteIdPublishedAt),
+      source: "note-id"
     };
   }
   return {
@@ -123,10 +109,11 @@ export function resolveXhsStatePublishedAt(fields = {}, {
 
 export function restoreXhsDetailFromCache(cached) {
   if (!cached || cached.cacheVersion !== XHS_DETAIL_CACHE_VERSION) return null;
+  const hasIdPublishedAt = cached.publishedAtSource === "note-id";
   return {
     tags: cached.tags || "",
-    publishedAt: cached.publishedAt ? parseDateOnly(cached.publishedAt) : null,
-    publishedAtSource: cached.publishedAtSource || "",
+    publishedAt: hasIdPublishedAt && cached.publishedAt ? parseDateOnly(cached.publishedAt) : null,
+    publishedAtSource: hasIdPublishedAt ? "note-id" : "",
     noteUrl: cached.noteUrl || ""
   };
 }

@@ -7,6 +7,7 @@ import { compareDateStrings, formatDate, normalizeDateInput } from "./date-utils
 import { dateFromBilibiliEpoch, resolveBilibiliPublishedAt } from "./bilibili-published-date.mjs";
 import { extractBilibiliBv, normalizeBilibiliVideoUrl } from "./link-utils.mjs";
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
+import { readPlatformAccounts } from "./platform-accounts.mjs";
 import {
   DetailCache,
   createCrawlAudit,
@@ -33,12 +34,6 @@ const DETAIL_GAP_DELAY = parseDelayRange(process.env.BILIBILI_DETAIL_GAP_DELAY |
 const HEADLESS = resolveHeadless();
 const BILIBILI_DETAIL_CACHE_VERSION = 3;
 
-const ACCOUNT = {
-  name: "同花顺投资",
-  mid: "1622777305",
-  url: "https://space.bilibili.com/1622777305/video"
-};
-
 async function main() {
   if (compareDateStrings(SINCE, TODAY) > 0) {
     throw new Error(`起始日期不能晚于结束日期：${SINCE} > ${TODAY}`);
@@ -47,6 +42,10 @@ async function main() {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
   console.log(`B站爬取时间范围：${SINCE} 至 ${TODAY}`);
   console.log(`B站采集模式：${modeLabel(CRAWL_MODE)}`);
+  const accounts = await readPlatformAccounts("bilibili", { root: ROOT });
+  if (accounts.length === 0) {
+    throw new Error("请先在账号配置中添加B站账号。");
+  }
 
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     ...chromiumLaunchOptions(),
@@ -73,14 +72,19 @@ async function main() {
     refresh: shouldRefreshDetailCache()
   });
 
-  const rows = await crawlAccountRecentFirst({
-    listPage,
-    detailPage,
-    account: ACCOUNT,
-    audit: audit.account(ACCOUNT.name),
-    detailCache,
-    resourceBlocker
-  });
+  const rows = [];
+  for (const account of accounts) {
+    const accountRows = await crawlAccountRecentFirst({
+      listPage,
+      detailPage,
+      account,
+      audit: audit.account(account.name),
+      detailCache,
+      resourceBlocker
+    });
+    rows.push(...accountRows);
+    console.log(`B站账号完成：${account.name}，命中 ${accountRows.length} 条`);
+  }
   logAuditSummary(audit);
   await resourceBlocker.close();
   await context.close();
@@ -99,7 +103,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, account, audit, d
     }
   });
 
-  console.log(`\n==> 处理B站账号：${account.name}（mid：${account.mid}）`);
+  console.log(`\n==> 处理B站账号：${account.name}`);
   await listPage.goto(account.url, { waitUntil: "domcontentloaded" });
   await listPage.waitForTimeout(5000);
 
@@ -150,8 +154,6 @@ async function crawlAccountRecentFirst({ listPage, detailPage, account, audit, d
         }
         continue;
       }
-      if (prefilter.reason === "unknown-date") audit?.recordUnknownDate();
-
       if (checked >= MAX_DETAIL_PAGES) {
         stop("detail-limit");
         console.log(`已达到B站详情页检查上限：${MAX_DETAIL_PAGES}`);
@@ -183,11 +185,13 @@ async function crawlAccountRecentFirst({ listPage, detailPage, account, audit, d
       }
 
       if (!detail.publishedAt) {
+        audit?.recordUnknownDate();
         console.warn(`未识别B站发布时间：${detail.videoUrl || link.videoUrl}`);
         continue;
       }
 
       if (compareDateStrings(detail.publishedAt, SINCE) < 0) {
+        audit?.recordSkipped("before-since");
         oldItemRounds += 1;
         console.log(`边界检查：发现早于开始日期的B站视频，不导出：${account.name} ${detail.publishedAt} ${detail.videoUrl || link.videoUrl}`);
         if ((hasInRangeItem || checked >= 8) && oldItemRounds >= OLD_ITEM_STOP_AFTER) {
@@ -201,6 +205,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, account, audit, d
       oldItemRounds = 0;
 
       if (compareDateStrings(detail.publishedAt, TODAY) > 0) {
+        audit?.recordSkipped("after-until");
         console.log(`跳过晚于结束日期B站视频：${account.name} ${detail.publishedAt} ${detail.videoUrl || link.videoUrl}`);
         continue;
       }

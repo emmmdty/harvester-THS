@@ -17,22 +17,27 @@ function localDateKey(date) {
   ].join("-");
 }
 
-test("XHS publish date resolution prefers the detail page publish date", () => {
+test("XHS publish date resolution uses the note ID before detail or state dates", () => {
+  const detailPublishedAt = new Date(2026, 4, 30);
+  const statePublishedAt = new Date(2026, 4, 30);
+
+  assert.equal(
+    localDateKey(resolveXhsPublishedAt({
+      noteId: "6a198e0c0000000036000f68",
+      detailPublishedAt,
+      statePublishedAt
+    })),
+    "2026-05-29"
+  );
+});
+
+test("XHS publish date resolution does not fall back to detail or state dates", () => {
   const detailPublishedAt = new Date(2026, 4, 19);
   const statePublishedAt = new Date(2026, 4, 20);
 
   assert.equal(
     resolveXhsPublishedAt({ detailPublishedAt, statePublishedAt }),
-    detailPublishedAt
-  );
-});
-
-test("XHS publish date resolution falls back to the state publish date", () => {
-  const statePublishedAt = new Date(2026, 4, 20);
-
-  assert.equal(
-    resolveXhsPublishedAt({ detailPublishedAt: null, statePublishedAt }),
-    statePublishedAt
+    null
   );
 });
 
@@ -108,7 +113,7 @@ test("XHS detail cache restore requires the current cache version", () => {
     noteUrl: "https://www.xiaohongshu.com/explore/old"
   }), null);
 
-  const restored = restoreXhsDetailFromCache({
+  const restoredFromDetailDate = restoreXhsDetailFromCache({
     cacheVersion: XHS_DETAIL_CACHE_VERSION,
     tags: "#tag",
     publishedAt: "2026-05-22",
@@ -116,6 +121,17 @@ test("XHS detail cache restore requires the current cache version", () => {
     noteUrl: "https://www.xiaohongshu.com/explore/current"
   });
 
+  assert.equal(restoredFromDetailDate.publishedAt, null);
+  assert.equal(restoredFromDetailDate.publishedAtSource, "");
+
+  const restored = restoreXhsDetailFromCache({
+    cacheVersion: XHS_DETAIL_CACHE_VERSION,
+    tags: "#tag",
+    publishedAt: "2026-05-22",
+    publishedAtSource: "note-id",
+    noteUrl: "https://www.xiaohongshu.com/explore/current"
+  });
+
   assert.equal(localDateKey(restored.publishedAt), "2026-05-22");
-  assert.equal(restored.publishedAtSource, "detail-date");
+  assert.equal(restored.publishedAtSource, "note-id");
 });

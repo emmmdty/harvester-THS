@@ -255,6 +255,16 @@ test("XHS explore links are converted to share-style discovery URLs", () => {
   );
 });
 
+test("XHS discovery links use the canonical share parameter order", () => {
+  assert.equal(
+    canonicalizeContentLink(
+      "xhs",
+      "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?xsec_source=pc_user&foo=bar&xsec_token=secret&xhsshare=pc_web"
+    ),
+    "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare&xhsshare=pc_web&xsec_token=secret&xsec_source=pc_share"
+  );
+});
+
 test("XHS state fallback links use share-style discovery URLs to avoid 404", () => {
   assert.equal(
     buildXhsExploreUrl("6a0c4c5e000000003502a761", "secret"),
@@ -296,6 +306,7 @@ test("spreadsheet-safe text escapes formula prefixes in free-text fields", () =>
 });
 
 test("daily records include a separator row and per-platform material fields", () => {
+  const canonicalXhsLink = "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare&xhsshare=pc_web&xsec_source=pc_share";
   const rows = buildDailySheetRecords("xhs", "2026-05-19", [
     {
       link: "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare",
@@ -321,7 +332,7 @@ test("daily records include a separator row and per-platform material fields", (
   assert.deepEqual(mapDailyRecordToFeishuFields("xhs", rows[1]), {
     "编号": "1",
     "投稿时间": "05 19",
-    "内容链接": "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare",
+    "内容链接": canonicalXhsLink,
     "笔记ID": "6a0c4c5e000000003502a761",
     "账号": "投资号",
     "内容类型": "图文",
@@ -331,13 +342,28 @@ test("daily records include a separator row and per-platform material fields", (
   assert.deepEqual(mapDailyRecordToSheetRow("xhs", rows[1]), [
     "1",
     "05 19",
-    urlCell("https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare"),
+    urlCell(canonicalXhsLink),
     "6a0c4c5e000000003502a761",
     { type: "multipleValue", values: ["投资号"] },
     { type: "multipleValue", values: ["图文"] },
     "通过",
     "#同顺图解"
   ]);
+});
+
+test("daily records omit the 5.30 separator row when the target date has no material", () => {
+  const rows = buildDailySheetRecords("xhs", "2026-05-30", [
+    {
+      link: "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761",
+      id: "6a0c4c5e000000003502a761",
+      accountName: "同花顺投资",
+      contentType: "图文",
+      tags: "#同顺图解",
+      publishedAt: "2026-05-29"
+    }
+  ]);
+
+  assert.deepEqual(rows, []);
 });
 
 test("Douyin daily records use the submission review column order", () => {
@@ -415,8 +441,8 @@ test("account names are normalized to Feishu dropdown labels", () => {
 });
 
 test("Douyin account crawl config omits Miaodong investment", async () => {
-  const accountConfig = JSON.parse(await fs.readFile(path.join(process.cwd(), "douyin-accounts.json"), "utf8"));
-  assert.equal(accountConfig.some((account) => account.name === "喵懂投资"), false);
+  const accountConfig = JSON.parse(await fs.readFile(path.join(process.cwd(), "platform-accounts.json"), "utf8"));
+  assert.equal(accountConfig.douyin.some((account) => account.name === "喵懂投资"), false);
 });
 
 test("bilibili daily records map BV ids, fixed account names, title, and tags", () => {
@@ -598,6 +624,7 @@ test("Feishu configuration accepts a wiki token instead of a spreadsheet token",
 });
 
 test("single platform JSON output can be written to its Feishu sheet", async () => {
+  const canonicalXhsLink = "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare&xhsshare=pc_web&xsec_source=pc_share";
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-ths-"));
   await fs.mkdir(path.join(root, "output"));
   await fs.writeFile(path.join(root, "output", "xhs_notes_2026-05-19_to_2026-05-19.json"), JSON.stringify({
@@ -640,7 +667,7 @@ test("single platform JSON output can be written to its Feishu sheet", async () 
   assert.deepEqual(calls[1][2][1], [
     "1",
     "05 19",
-    urlCell("https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare"),
+    urlCell(canonicalXhsLink),
     "6a0c4c5e000000003502a761",
     { type: "multipleValue", values: ["投资号"] },
     { type: "multipleValue", values: ["图文"] },
@@ -650,6 +677,7 @@ test("single platform JSON output can be written to its Feishu sheet", async () 
 });
 
 test("single XHS account JSON output with an account suffix can be written to Feishu", async () => {
+  const canonicalXhsLink = "https://www.xiaohongshu.com/discovery/item/6b0c4c5e000000003502a762?source=webshare&xhsshare=pc_web&xsec_source=pc_share";
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-ths-"));
   await fs.mkdir(path.join(root, "output"));
   await fs.writeFile(path.join(root, "output", "xhs_notes_2026-05-19_to_2026-05-19_研习社.json"), JSON.stringify({
@@ -689,7 +717,7 @@ test("single XHS account JSON output with an account suffix can be written to Fe
   assert.deepEqual(calls[1][2][1], [
     "1",
     "05 19",
-    urlCell("https://www.xiaohongshu.com/discovery/item/6b0c4c5e000000003502a762?source=webshare"),
+    urlCell(canonicalXhsLink),
     "6b0c4c5e000000003502a762",
     { type: "multipleValue", values: ["研习社"] },
     { type: "multipleValue", values: ["图文"] },
@@ -985,11 +1013,28 @@ test("Feishu append uses a range matching the appended row count", async () => {
     }
   }, {
     tenantAccessToken: "tenant_token",
-    async fetch(url, options) {
+    async fetch(url, options = {}) {
       requests.push({
         url,
-        body: JSON.parse(options.body)
+        method: options.method || "GET",
+        body: options.body ? JSON.parse(options.body) : null
       });
+      if (url.includes("/sheets/query")) {
+        return {
+          ok: true,
+          async text() {
+            return JSON.stringify({
+              code: 0,
+              data: {
+                sheets: [
+                  { sheet_id: "4z96Ou", grid_properties: { row_count: 100 } },
+                  { sheet_id: "1FOmKl", grid_properties: { row_count: 100 } }
+                ]
+              }
+            });
+          }
+        };
+      }
       return {
         ok: true,
         async text() {
@@ -1033,11 +1078,28 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
     }
   }, {
     tenantAccessToken: "tenant_token",
-    async fetch(url, options) {
+    async fetch(url, options = {}) {
       requests.push({
         url,
-        body: JSON.parse(options.body)
+        method: options.method || "GET",
+        body: options.body ? JSON.parse(options.body) : null
       });
+      if (url.includes("/sheets/query")) {
+        return {
+          ok: true,
+          async text() {
+            return JSON.stringify({
+              code: 0,
+              data: {
+                sheets: [
+                  { sheet_id: "4z96Ou", grid_properties: { row_count: 100 } },
+                  { sheet_id: "1FOmKl", grid_properties: { row_count: 100 } }
+                ]
+              }
+            });
+          }
+        };
+      }
       return {
         ok: true,
         async text() {
@@ -1055,8 +1117,10 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
     ["2", "05 19", "link", "BVxxx", "投资号", "标题", "#tag"]
   ], 5);
 
-  assert.match(requests[0].url, /\/insert_dimension_range$/);
-  assert.deepEqual(requests[0].body, {
+  const writeRequests = requests.filter((request) => request.method !== "GET");
+
+  assert.match(writeRequests[0].url, /\/insert_dimension_range$/);
+  assert.deepEqual(writeRequests[0].body, {
     dimension: {
       sheetId: "4z96Ou",
       majorDimension: "ROWS",
@@ -1065,17 +1129,17 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
     },
     inheritStyle: "BEFORE"
   });
-  assert.match(requests[1].url, /\/values$/);
-  assert.equal(requests[1].body.valueRange.range, "4z96Ou!A2:H3");
-  assert.match(requests[2].url, /\/insert_dimension_range$/);
-  assert.deepEqual(requests[2].body.dimension, {
+  assert.match(writeRequests[1].url, /\/values$/);
+  assert.equal(writeRequests[1].body.valueRange.range, "4z96Ou!A2:H3");
+  assert.match(writeRequests[2].url, /\/insert_dimension_range$/);
+  assert.deepEqual(writeRequests[2].body.dimension, {
     sheetId: "1FOmKl",
     majorDimension: "ROWS",
     startIndex: 4,
     endIndex: 5
   });
-  assert.match(requests[3].url, /\/values$/);
-  assert.equal(requests[3].body.valueRange.range, "1FOmKl!A5:G5");
+  assert.match(writeRequests[3].url, /\/values$/);
+  assert.equal(writeRequests[3].body.valueRange.range, "1FOmKl!A5:G5");
 });
 
 test("Feishu readRows reads the actual sheet rows in chunks past row 5000", async () => {

@@ -14,9 +14,25 @@ services:
       FEISHU_SHEET_DOUYIN: ${FEISHU_SHEET_DOUYIN:-}
       FEISHU_SHEET_XHS: ${FEISHU_SHEET_XHS:-}
       FEISHU_SHEET_BILIBILI: ${FEISHU_SHEET_BILIBILI:-}
+      FEISHU_SHEET_STEP15_FILTERED: ${FEISHU_SHEET_STEP15_FILTERED:-}
       FEISHU_OPEN_BASE_URL: ${FEISHU_OPEN_BASE_URL:-https://open.feishu.cn}
-      PANEL_PASSWORD: ${PANEL_PASSWORD:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-}
+      FILTER_PROVIDER: ${FILTER_PROVIDER:-qwen}
+      FILTER_STRICTNESS: ${FILTER_STRICTNESS:-balanced}
+      FILTER_TARGET_PASS_RATE: ${FILTER_TARGET_PASS_RATE:-0.4}
+      FILTER_MIN_PASS_RATE: ${FILTER_MIN_PASS_RATE:-0.33}
+      FILTER_MAX_PASS_RATE: ${FILTER_MAX_PASS_RATE:-0.5}
+      STEP15_ASR_COMMAND: ${STEP15_ASR_COMMAND:-}
+      STEP15_OCR_COMMAND: ${STEP15_OCR_COMMAND:-}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen3-vl-plus}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://dashscope-intl.aliyuncs.com/api/v1}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_IMAGE_UNDERSTANDING_ENDPOINT: ${MINIMAX_IMAGE_UNDERSTANDING_ENDPOINT:-}
     volumes:
+      - ./platform-accounts.json:/app/platform-accounts.json
       - ./output:/app/output
       - ./.xhs-profile:/app/.xhs-profile
       - ./.douyin-profile:/app/.douyin-profile

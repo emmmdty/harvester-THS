@@ -123,6 +123,21 @@ test("audit helper records skipped, checked, cache hit, unknown date, and stop r
   });
 });
 
+test("crawlers count unknown dates only from authoritative platform date sources", async () => {
+  const crawlerFiles = {
+    xhs: await fs.readFile(path.join(process.cwd(), "src", "crawl-xhs.mjs"), "utf8"),
+    douyin: await fs.readFile(path.join(process.cwd(), "src", "crawl-douyin.mjs"), "utf8"),
+    bilibili: await fs.readFile(path.join(process.cwd(), "src", "crawl-bilibili.mjs"), "utf8")
+  };
+
+  for (const source of Object.values(crawlerFiles)) {
+    assert.doesNotMatch(source, /if \(prefilter\.reason === "unknown-date"\) audit\?\.recordUnknownDate\(\);/);
+  }
+  assert.match(crawlerFiles.xhs, /publishedDateFromXhsNoteId\(link\.id\)[\s\S]*if \(!idPublishedAtDate\) \{[\s\S]*audit\?\.recordUnknownDate\(\);/);
+  assert.match(crawlerFiles.douyin, /publishedDateFromDouyinItemId\(link\.id\)[\s\S]*if \(!idPublishedAtDate\) \{[\s\S]*audit\?\.recordUnknownDate\(\);/);
+  assert.match(crawlerFiles.bilibili, /if \(!detail\.publishedAt\) \{[\s\S]*audit\?\.recordUnknownDate\(\);/);
+});
+
 test("resource blocker aborts heavy assets only in conservative mode", async () => {
   const { shouldBlockResource } = await loadRuntime();
 

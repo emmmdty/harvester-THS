@@ -67,6 +67,8 @@ function formatTagNames(names, { title = "" } = {}) {
     const normalized = normalizeTagText(name);
     if (!normalized || normalized.length > 40) continue;
     if (normalizedTitle && normalized === normalizedTitle) continue;
+    if (/^发现《/u.test(normalized)) continue;
+    if (normalizedTitle && normalized.length >= 5 && normalizedTitle.includes(normalized)) continue;
     if (BILIBILI_NOISE_TAGS.has(normalized.toLowerCase())) continue;
     if (seen.has(normalized)) continue;
     seen.add(normalized);

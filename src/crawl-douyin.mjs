@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
-import { formatDate as formatDateInTimeZone } from "./date-utils.mjs";
+import { dateStringToDate, formatDate as formatDateInTimeZone } from "./date-utils.mjs";
+import { publishedDateFromDouyinItemId } from "./content-identity.mjs";
 import {
   extractDouyinApiDetail,
   extractDouyinPublishedAtFromText,
@@ -14,6 +15,8 @@ import {
 import { douyinProfileIdsMatch, extractPrimaryDouyinAuthorProfileUrl } from "./douyin-profile-guard.mjs";
 import { classifyContentType } from "./content-classifier.mjs";
 import { spreadsheetSafeText } from "./spreadsheet-safe.mjs";
+import { readPlatformAccounts } from "./platform-accounts.mjs";
+import { normalizeDouyinContentLink } from "./link-utils.mjs";
 import {
   DetailCache,
   comparePublishedAtToDateRange,
@@ -46,15 +49,6 @@ const SCROLL_DELAY = parseDelayRange(process.env.DOUYIN_SCROLL_DELAY || "2000-40
 const HEADLESS = resolveHeadless();
 const DOUYIN_DETAIL_CACHE_VERSION = 3;
 
-const DEFAULT_ACCOUNTS = [
-  { name: "同花顺投资", url: "https://www.douyin.com/user/MS4wLjABAAAArf6v6Z48Pma-bIrz00wVCu76ioePN0vKzHAM_w9DN8AOkLekEk13Ay8_L-74BBB8" },
-  { name: "同花顺股民社区", url: "https://www.douyin.com/user/MS4wLjABAAAAzuAZbgu03QhyuhKxMJGwrG0pnvDNfstYkT5ZCNGD-0U" },
-  { name: "同花顺财富", url: "https://www.douyin.com/user/MS4wLjABAAAAffWkqfj5JINgA9xCh5-FKaNW5qY2huDbccgDgQho8B8" },
-  { name: "同花顺财经", url: "https://www.douyin.com/user/MS4wLjABAAAAUre0Jlqe0K5psIWsDhGc8A9TKiKgfYkI0uCnryZ-9U3SeKkyAM7hSqhohItj8okF" },
-  { name: "同花顺问财", url: "https://www.douyin.com/user/MS4wLjABAAAA6JdBqgkVwTEgEeOHSWLxaDZ2II-eG3Jm1LpzZiqrRu7_kE2iDCZdYt1jqpVAawMa" },
-  { name: "同花顺期货通", url: "https://www.douyin.com/user/MS4wLjABAAAAxr3bk2-4lsUB0XOErXDXFKIocqd2wOExCTAuRwQ19Vg" }
-];
-
 async function main() {
   if (SINCE > TODAY) {
     throw new Error(`起始日期不能晚于结束日期：${formatDate(SINCE)} > ${formatDate(TODAY)}`);
@@ -65,7 +59,10 @@ async function main() {
   console.log(`抖音相对时间解析基准：${formatDate(REFERENCE_DATE)}`);
   console.log(`抖音采集模式：${modeLabel(CRAWL_MODE)}`);
 
-  const accounts = await loadAccounts();
+  const accounts = await readPlatformAccounts("douyin", { root: ROOT });
+  if (accounts.length === 0) {
+    throw new Error("请先在账号配置中添加抖音账号。");
+  }
   const rows = [];
   const audit = createCrawlAudit("douyin");
   const accountErrors = [];
@@ -140,24 +137,6 @@ async function main() {
   console.log(`\n抖音完成：导出 ${rows.length} 条`);
 }
 
-async function loadAccounts() {
-  const accountPath = path.join(ROOT, "douyin-accounts.json");
-  try {
-    const text = await fs.readFile(accountPath, "utf8");
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed)) {
-      throw new Error("douyin-accounts.json must be an array");
-    }
-    return parsed.map((item) => ({
-      name: String(item.name || "").trim(),
-      url: normalizeUrl(String(item.url || "").trim())
-    })).filter((item) => item.name);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    return DEFAULT_ACCOUNTS;
-  }
-}
-
 async function crawlAccountRecentFirst({ listPage, detailPage, accountName, profileUrl, audit, detailCache, resourceBlocker, copyShare }) {
   await listPage.goto(profileUrl, { waitUntil: "domcontentloaded" });
   await listPage.waitForLoadState("domcontentloaded").catch(() => {});
@@ -199,8 +178,10 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
 
     for (const link of newLinks) {
       seen.add(link.id);
+      const idPublishedAt = publishedDateFromDouyinItemId(link.id);
+      const idPublishedAtDate = idPublishedAt ? dateStringToDate(idPublishedAt) : null;
       const prefilter = shouldInspectDetailByPublishedAt({
-        publishedAt: link.publishedAt,
+        publishedAt: idPublishedAtDate,
         since: SINCE,
         until: TODAY
       });
@@ -208,19 +189,17 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
         audit?.recordSkipped(prefilter.reason);
         if (prefilter.reason === "before-since") {
           oldItemRounds += 1;
-          console.log(`列表时间边界：早于开始日期，跳过详情页：${accountName} ${link.publishedAt} ${link.exportUrl}`);
+          console.log(`列表时间边界：早于开始日期，跳过详情页：${accountName} ${idPublishedAt} ${link.exportUrl}`);
           if ((hasInRangeItem || seen.size >= MIN_CHECK_BEFORE_STOP) && oldItemRounds >= OLD_ITEM_STOP_AFTER) {
             stop("old-boundary");
             console.log(`连续 ${OLD_ITEM_STOP_AFTER} 条早于起始日期，停止继续下翻：${accountName}`);
             return rows;
           }
         } else {
-          console.log(`列表时间边界：晚于结束日期，跳过详情页：${accountName} ${link.publishedAt} ${link.exportUrl}`);
+          console.log(`列表时间边界：晚于结束日期，跳过详情页：${accountName} ${idPublishedAt} ${link.exportUrl}`);
         }
         continue;
       }
-      if (prefilter.reason === "unknown-date") audit?.recordUnknownDate();
-
       if (checked >= MAX_DETAIL_PAGES) {
         stop("detail-limit");
         console.log(`已达到详情页检查上限：${MAX_DETAIL_PAGES}`);
@@ -245,6 +224,9 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
           console.warn(error.message || String(error));
           return { tags: "", publishedAt: null, itemUrl: link.exportUrl, failed: true };
         });
+        if (detail && !detail.failed && idPublishedAtDate) {
+          detail.publishedAt = idPublishedAtDate;
+        }
         if (isCacheableDouyinDetail(detail)) {
           await detailCache.set(link.id, serializeDouyinDetailForCache(detail));
         }
@@ -259,17 +241,16 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
         continue;
       }
 
-      if (!detail.publishedAt) {
+      if (!idPublishedAtDate) {
+        audit?.recordUnknownDate();
         console.warn(`未识别抖音发布时间：${detail.itemUrl || link.exportUrl}`);
-        if (detail.dateCandidates) {
-          console.warn(`时间候选文本：${detail.dateCandidates}`);
-        }
         continue;
       }
 
-      const publishedAt = dateKey(detail.publishedAt);
-      const rangePosition = comparePublishedAtToDateRange({ publishedAt: detail.publishedAt, since: SINCE, until: TODAY });
+      const publishedAt = idPublishedAt;
+      const rangePosition = comparePublishedAtToDateRange({ publishedAt: idPublishedAtDate, since: SINCE, until: TODAY });
       if (rangePosition === "before-since") {
+        audit?.recordSkipped(rangePosition);
         oldItemRounds += 1;
         console.log(`边界检查：发现早于开始日期的作品，不导出：${accountName} ${publishedAt} ${detail.itemUrl || link.exportUrl}`);
         if ((hasInRangeItem || checked >= MIN_CHECK_BEFORE_STOP) && oldItemRounds >= OLD_ITEM_STOP_AFTER) {
@@ -283,6 +264,7 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
       oldItemRounds = 0;
 
       if (rangePosition === "after-until") {
+        audit?.recordSkipped(rangePosition);
         console.log(`跳过晚于结束日期作品：${accountName} ${publishedAt} ${detail.itemUrl || link.exportUrl}`);
         continue;
       }
@@ -299,14 +281,14 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
       rows.push({
         accountName,
         publishedAt,
-        itemUrl: detail.itemUrl || link.exportUrl,
+        itemUrl: normalizeDouyinContentLink(detail.itemUrl || link.exportUrl),
         shareText: detail.shareText || "",
         title: detail.title || "",
         tags: detail.tags,
         contentType: classification.contentType,
         contentTypeReview: classification.contentTypeReview
       });
-      console.log(`抖音命中：${accountName} ${publishedAt} ${detail.itemUrl || link.exportUrl}`);
+      console.log(`抖音命中：${accountName} ${publishedAt} ${normalizeDouyinContentLink(detail.itemUrl || link.exportUrl)}`);
     }
 
     if (stableRounds >= 4 && links.length > 0) {
@@ -689,7 +671,7 @@ function normalizeItemUrl(rawUrl) {
   if (!id) return null;
   if (!/^\d{8,}$/.test(id) && !/^[A-Za-z0-9_-]{12,}$/.test(id)) return null;
 
-  const cleanUrl = `https://www.douyin.com${url.pathname}${url.search}`;
+  const cleanUrl = normalizeDouyinContentLink(`https://www.douyin.com${url.pathname}`);
 
   return {
     id,

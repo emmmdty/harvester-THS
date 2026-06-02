@@ -5,8 +5,8 @@ import "dotenv/config";
 import { extractFeishuCellLink, PLATFORM_HEADERS } from "./daily-records.mjs";
 import { formatBatchTitle, formatDate, formatDisplayDate, parseDateStringParts } from "./date-utils.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
-import { canonicalizeContentLink, extractBilibiliBv, extractXhsNoteId } from "./link-utils.mjs";
-import { XHS_DETAIL_CACHE_VERSION } from "./xhs-published-date.mjs";
+import { publishedDateFromDouyinItemId, publishedDateFromXhsNoteId } from "./content-identity.mjs";
+import { canonicalizeContentLink, extractBilibiliBv, extractDouyinItemId, extractXhsNoteId } from "./link-utils.mjs";
 
 const PLATFORM_IDS = ["douyin", "xhs", "bilibili"];
 
@@ -122,7 +122,7 @@ export function organizePlatformRows({
 
     dates.add(resolvedDate);
     const normalizedRow = normalizeRowWidth(row, headers.length);
-    normalizedRow[dateIndex] = formatDisplayDate(resolvedDate);
+    normalizedRow[dateIndex] = formatSheetDate(resolvedDate);
     if (!materialRowsByDate.has(resolvedDate)) materialRowsByDate.set(resolvedDate, []);
     materialRowsByDate.get(resolvedDate).push({
       row: normalizedRow,
@@ -146,10 +146,11 @@ export function organizePlatformRows({
   const dateBlocks = [];
 
   for (const date of sortedDates) {
+    const materials = materialRowsByDate.get(date) || [];
+    if (materials.length === 0) continue;
     const separatorRowNumber = dataStartRow + organizedRows.length;
     separatorRowNumbers.push(separatorRowNumber);
     organizedRows.push(separatorRowsByDate.get(date) || separatorRow(platformId, date));
-    const materials = materialRowsByDate.get(date) || [];
     let sequence = 1;
     for (const item of materials) {
       if (sequenceIndex >= 0) item.row[sequenceIndex] = String(sequence++);
@@ -212,19 +213,21 @@ async function writeOrganizedPlatformRows({ client, platformId, existingRows, or
 
 export async function buildPublishedDateResolver({ root = process.cwd() } = {}) {
   const detailCaches = {
-    douyin: await readDetailCache(path.join(root, ".runtime", "detail-cache", "douyin")),
-    xhs: await readDetailCache(path.join(root, ".runtime", "detail-cache", "xhs"), { platformId: "xhs" })
+    douyin: await readDetailCache(path.join(root, ".runtime", "detail-cache", "douyin"))
   };
   const localJson = await readLocalJsonPublishedDates(root);
 
   return ({ platformId, fields }) => {
     if (platformId === "xhs") {
       const id = String(fields["笔记ID"] || extractXhsNoteId(extractFeishuCellLink(fields["内容链接"]))).trim();
-      return detailCaches.xhs.get(id)?.publishedAt || localJson.xhsById.get(id) || localJson.xhsByLink.get(canonicalizeContentLink(platformId, extractFeishuCellLink(fields["内容链接"]))) || "";
+      const idPublishedAt = publishedDateFromXhsNoteId(id);
+      return idPublishedAt || "";
     }
     if (platformId === "douyin") {
       const link = extractFeishuCellLink(fields["内容链接"]);
       const itemId = extractDouyinItemId(link);
+      const idPublishedAt = publishedDateFromDouyinItemId(itemId);
+      if (idPublishedAt) return idPublishedAt;
       return detailCaches.douyin.get(itemId)?.publishedAt || localJson.douyinByLink.get(canonicalizeContentLink(platformId, link)) || "";
     }
     if (platformId === "bilibili") {
@@ -235,14 +238,13 @@ export async function buildPublishedDateResolver({ root = process.cwd() } = {}) 
   };
 }
 
-async function readDetailCache(dir, { platformId = "" } = {}) {
+async function readDetailCache(dir) {
   const cache = new Map();
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
     const id = entry.name.replace(/\.json$/u, "");
     const parsed = JSON.parse(await fs.readFile(path.join(dir, entry.name), "utf8"));
-    if (platformId === "xhs" && parsed.cacheVersion !== XHS_DETAIL_CACHE_VERSION) continue;
     if (parsed.publishedAt) cache.set(id, { publishedAt: parsed.publishedAt });
   }
   return cache;
@@ -251,8 +253,6 @@ async function readDetailCache(dir, { platformId = "" } = {}) {
 async function readLocalJsonPublishedDates(root) {
   const result = {
     douyinByLink: new Map(),
-    xhsById: new Map(),
-    xhsByLink: new Map(),
     bilibiliById: new Map(),
     bilibiliByLink: new Map()
   };
@@ -265,15 +265,11 @@ async function readLocalJsonPublishedDates(root) {
     if (!Array.isArray(parsed.items)) continue;
     for (const item of parsed.items) {
       const platformId = item.platform;
-      if (platformId === "xhs" && parsed.publishedAtVersion !== XHS_DETAIL_CACHE_VERSION) continue;
       const publishedAt = normalizeSheetDate(item.publishedAt);
       if (!publishedAt) continue;
       const link = item.link || item.noteUrl || item.itemUrl || item.videoUrl || "";
       if (platformId === "douyin") {
         result.douyinByLink.set(canonicalizeContentLink(platformId, link), publishedAt);
-      } else if (platformId === "xhs") {
-        if (item.id) result.xhsById.set(String(item.id), publishedAt);
-        result.xhsByLink.set(canonicalizeContentLink(platformId, link), publishedAt);
       } else if (platformId === "bilibili") {
         if (item.id) result.bilibiliById.set(String(item.id), publishedAt);
         result.bilibiliByLink.set(canonicalizeContentLink(platformId, link), publishedAt);
@@ -317,15 +313,29 @@ function columnName(index) {
 
 function separatorRow(platformId, date) {
   const row = Array.from({ length: PLATFORM_HEADERS[platformId].length }, () => "");
-  row[PLATFORM_HEADERS[platformId].indexOf("投稿时间")] = formatBatchTitle(date);
+  row[PLATFORM_HEADERS[platformId].indexOf("投稿时间")] = formatSheetBatchTitle(date);
   return row;
 }
 
 function separatorDateFromRow(row, dateIndex) {
   const text = cellText(row[dateIndex]).trim();
+  const fullBatch = text.match(/^(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\s+投稿视频$/u);
+  if (fullBatch) return normalizeSheetDate(fullBatch[1]);
   const batch = text.match(/^(\d{2})(\d{2})\s+投稿视频$/u);
   if (!batch) return "";
   return `${currentYear()}-${batch[1]}-${batch[2]}`;
+}
+
+function formatSheetDate(dateString) {
+  return normalizeSheetDate(dateString).startsWith(`${currentYear()}-`)
+    ? formatDisplayDate(dateString)
+    : dateString;
+}
+
+function formatSheetBatchTitle(dateString) {
+  return normalizeSheetDate(dateString).startsWith(`${currentYear()}-`)
+    ? formatBatchTitle(dateString)
+    : `${dateString} 投稿视频`;
 }
 
 function normalizeSheetDate(value) {
@@ -348,11 +358,6 @@ function normalizeSheetDate(value) {
 
 function currentYear() {
   return formatDate(new Date()).slice(0, 4);
-}
-
-function extractDouyinItemId(link) {
-  const match = String(link || "").match(/(?:video|note)\/(\d+)/u);
-  return match?.[1] || "";
 }
 
 function rowHasValue(row) {

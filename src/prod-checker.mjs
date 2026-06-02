@@ -13,7 +13,6 @@ export async function runProductionCheck({
 } = {}) {
   const checks = [];
   checks.push(await checkEnvFile(root));
-  checks.push(checkLanPassword(env));
   checks.push(checkFeishu(env));
   checks.push(await checkProfiles(root));
   checks.push(await checkScheduler(root));
@@ -54,17 +53,6 @@ async function checkEnvFile(root) {
   return exists
     ? check("env_file", "ok", "已找到 .env。")
     : check("env_file", "fail", "未找到 .env，请先复制 .env.example 并填入本地配置。");
-}
-
-function checkLanPassword(env) {
-  const password = String(env.PANEL_PASSWORD || "").trim();
-  return check(
-    "lan_password",
-    "ok",
-    password
-      ? "已配置 PANEL_PASSWORD；局域网访问会要求口令。"
-      : "未配置 PANEL_PASSWORD；局域网同事可免口令访问。"
-  );
 }
 
 function checkFeishu(env) {

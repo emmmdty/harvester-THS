@@ -161,6 +161,26 @@ test("extractDouyinTitle falls back to copied share text without URL or copy pro
   assert.equal(extractDouyinTitle({ shareText }), "你会推荐哪一本呢？");
 });
 
+test("extractDouyinTitle removes copied share prefix before the first tag", () => {
+  const shareText = "5.35 H@v.sE gOK:/ :0pm 03/28 五月涨跌幅前十股票盘点 # 同顺盘点 # 玩转同花顺 # 投资 # 财经  https://v.douyin.com/X8b3pyLqBEY/ 复制此链接，打开Dou音搜索，直接观看视频！";
+
+  assert.equal(extractDouyinTitle({ shareText }), "五月涨跌幅前十股票盘点");
+  assert.equal(extractDouyinTagsFromSources({ shareText }), "#同顺盘点 #玩转同花顺 #投资 #财经");
+});
+
+test("extractDouyinTitle preserves numeric title prefixes after copied share codes", () => {
+  const shareText = "3.84 Bgb:/ :9pm s@E.uF 06/03 520防渣指南！。你的自选有没有海王股？# 问财 # 问财问句 # 给同花顺的情书  https://v.douyin.com/ajyQHOgQ_yM/ 复制此链接，打开Dou音搜索，直接观看视频！";
+
+  assert.equal(extractDouyinTitle({ shareText }), "520防渣指南！。你的自选有没有海王股？");
+  assert.equal(extractDouyinTagsFromSources({ shareText }), "#问财 #问财问句 #给同花顺的情书");
+});
+
+test("extractDouyinTitle preserves separated numeric title prefixes", () => {
+  const shareText = "5.35 H@v.sE gOK:/ :0pm 03/28 1234 存钱法 # 投资 https://v.douyin.com/example/ 复制此链接，打开Dou音搜索，直接观看视频！";
+
+  assert.equal(extractDouyinTitle({ shareText }), "1234 存钱法");
+});
+
 test("extractDouyinTitle falls back to page title and removes Douyin suffixes", () => {
   assert.equal(
     extractDouyinTitle({ titleText: "一文看懂今日市场机会 - 抖音" }),

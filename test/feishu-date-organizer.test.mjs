@@ -30,14 +30,54 @@ test("organizePlatformRows moves material rows to their resolved publish date bl
 
   assert.equal(result.moves.length, 1);
   assert.deepEqual(result.dateBlocks.map((block) => [block.date, block.materialCount]), [
-    ["2026-05-24", 0],
     ["2026-05-23", 2]
   ]);
   assert.deepEqual(result.rows.map((row) => [row[0], row[1], row[3] || ""]), [
-    ["", "0524 投稿视频", ""],
     ["", "0523 投稿视频", ""],
     ["1", "05 23", "a"],
     ["2", "05 23", "b"]
+  ]);
+});
+
+test("organizePlatformRows removes separator-only date blocks after 5.30 cleanup", () => {
+  const rows = [
+    ["", "0530 投稿视频", "", "", "", "", "", ""],
+    ["", "0529 投稿视频", "", "", "", "", "", ""],
+    ["1", "05 29", buildFeishuUrlCell("https://www.xiaohongshu.com/discovery/item/6a198e0c0000000036000f68"), "6a198e0c0000000036000f68", "投资号", "图文", "通过", "#tag"]
+  ];
+
+  const result = organizePlatformRows({
+    platformId: "xhs",
+    rows,
+    dataStartRow: 3,
+    resolvePublishedAt: () => ""
+  });
+
+  assert.deepEqual(result.dateBlocks.map((block) => [block.date, block.materialCount]), [
+    ["2026-05-29", 1]
+  ]);
+  assert.deepEqual(result.rows.map((row) => [row[0], row[1], row[3] || ""]), [
+    ["", "0529 投稿视频", ""],
+    ["1", "05 29", "6a198e0c0000000036000f68"]
+  ]);
+});
+
+test("organizePlatformRows writes full-year labels for non-current-year date blocks", () => {
+  const rows = [
+    ["", "0524 投稿视频", "", "", "", "", ""],
+    ["1", "05 24", buildFeishuUrlCell("https://www.bilibili.com/video/BV1hhGd6kEVj/"), "BV1hhGd6kEVj", "投资号", "标题", "#tag"]
+  ];
+
+  const result = organizePlatformRows({
+    platformId: "bilibili",
+    rows,
+    dataStartRow: 3,
+    resolvePublishedAt: () => "2025-06-11"
+  });
+
+  assert.deepEqual(result.rows.map((row) => [row[0], row[1], row[3] || ""]), [
+    ["", "2025-06-11 投稿视频", ""],
+    ["1", "2025-06-11", "BV1hhGd6kEVj"]
   ]);
 });
 
@@ -80,7 +120,7 @@ test("rowsToRewrite pads only through the previous occupied data area", () => {
   ]);
 });
 
-test("buildPublishedDateResolver ignores stale XHS cache and local JSON versions", async () => {
+test("buildPublishedDateResolver does not use XHS cache or local JSON dates", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-date-resolver-"));
   await fs.mkdir(path.join(root, ".runtime", "detail-cache", "xhs"), { recursive: true });
   await fs.mkdir(path.join(root, "output"), { recursive: true });
@@ -133,7 +173,7 @@ test("buildPublishedDateResolver ignores stale XHS cache and local JSON versions
       "笔记ID": "note-new",
       "内容链接": buildFeishuUrlCell("https://www.xiaohongshu.com/discovery/item/note-new")
     }
-  }), "2026-05-22");
+  }), "");
   assert.equal(resolvePublishedAt({
     platformId: "xhs",
     fields: {
@@ -147,5 +187,38 @@ test("buildPublishedDateResolver ignores stale XHS cache and local JSON versions
       "笔记ID": "note-local-new",
       "内容链接": buildFeishuUrlCell("https://www.xiaohongshu.com/discovery/item/note-local-new")
     }
-  }), "2026-05-22");
+  }), "");
+});
+
+test("buildPublishedDateResolver derives XHS and Douyin publish dates from deterministic content IDs", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-date-id-resolver-"));
+  await fs.mkdir(path.join(root, ".runtime", "detail-cache", "xhs"), { recursive: true });
+  await fs.mkdir(path.join(root, ".runtime", "detail-cache", "douyin"), { recursive: true });
+  await fs.mkdir(path.join(root, "output"), { recursive: true });
+
+  await fs.writeFile(path.join(root, ".runtime", "detail-cache", "xhs", "6a198e0c0000000036000f68.json"), JSON.stringify({
+    cacheVersion: XHS_DETAIL_CACHE_VERSION,
+    publishedAt: "2026-05-30",
+    publishedAtSource: "detail-date"
+  }), "utf8");
+  await fs.writeFile(path.join(root, ".runtime", "detail-cache", "douyin", "7645299366600674602.json"), JSON.stringify({
+    cacheVersion: 3,
+    publishedAt: "2026-05-30"
+  }), "utf8");
+
+  const resolvePublishedAt = await buildPublishedDateResolver({ root });
+
+  assert.equal(resolvePublishedAt({
+    platformId: "xhs",
+    fields: {
+      "笔记ID": "6a198e0c0000000036000f68",
+      "内容链接": buildFeishuUrlCell("https://www.xiaohongshu.com/discovery/item/6a198e0c0000000036000f68")
+    }
+  }), "2026-05-29");
+  assert.equal(resolvePublishedAt({
+    platformId: "douyin",
+    fields: {
+      "内容链接": buildFeishuUrlCell("https://www.douyin.com/note/7645299366600674602")
+    }
+  }), "2026-05-29");
 });
