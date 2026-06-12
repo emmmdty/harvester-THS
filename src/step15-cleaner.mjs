@@ -5,7 +5,8 @@ import {
   PLATFORM_HEADERS,
   PLATFORM_LEGACY_HEADERS,
   buildFeishuUrlCell,
-  extractFeishuCellLink
+  extractFeishuCellLink,
+  rowToFields
 } from "./daily-records.mjs";
 import { formatBatchTitle, formatDate, formatDisplayDate, pad } from "./date-utils.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
@@ -28,10 +29,6 @@ export const STEP15_FILTERED_HEADERS = PLATFORM_HEADERS.step15;
 
 const STEP15_SHEET_KEY = "step15";
 const STEP15_DATE_COLUMN_INDEX = STEP15_FILTERED_HEADERS.indexOf("投稿时间");
-const DOUYIN_STATUS_REASON_START_COLUMN = "F";
-const DOUYIN_STATUS_REASON_END_COLUMN = "G";
-const DOUYIN_ASSET_DIR_COLUMN = "K";
-
 export async function cleanDailyStep15({
   root = process.cwd(),
   targetDate,
@@ -112,7 +109,11 @@ export function sourceRowsForTargetDate(platformId, targetDate, rows = [], dataS
   const displayDate = formatDisplayDate(targetDate);
   const sourceRows = [];
   rows.forEach((row, index) => {
-    const fields = Object.fromEntries(headers.map((header, headerIndex) => [header, cellText(row[headerIndex])]));
+    const rawFields = rowToFields(platformId, row);
+    const fields = Object.fromEntries(headers.map((header) => [
+      header,
+      header === "内容链接" ? rawFields[header] : cellText(rawFields[header])
+    ]));
     const rowDate = String(fields["投稿时间"] || "").trim();
     const link = extractFeishuCellLink(row[headers.indexOf("内容链接")]);
     if (!link) return;
@@ -236,17 +237,24 @@ async function processDouyinRows({
 async function writeDouyinFeedback(client, feedbackRows) {
   const sheetId = client.sheetId("douyin");
   const headerRow = headerRowFor(client, "douyin");
-  await client.writeRows("douyin", `${sheetId}!${DOUYIN_STATUS_REASON_START_COLUMN}${headerRow}:${DOUYIN_STATUS_REASON_END_COLUMN}${headerRow}`, [["筛选状态", "简短理由"]]);
-  await client.writeRows("douyin", `${sheetId}!${DOUYIN_ASSET_DIR_COLUMN}${headerRow}:${DOUYIN_ASSET_DIR_COLUMN}${headerRow}`, [["本地素材目录"]]);
+  const statusIndex = PLATFORM_HEADERS.douyin.indexOf("筛选状态");
+  const reasonIndex = PLATFORM_HEADERS.douyin.indexOf("简短理由");
+  const assetIndex = PLATFORM_HEADERS.douyin.indexOf("本地素材目录");
+  if (statusIndex < 0 || reasonIndex < 0 || assetIndex < 0) return;
+  const statusColumn = columnName(statusIndex + 1);
+  const reasonColumn = columnName(reasonIndex + 1);
+  const assetColumn = columnName(assetIndex + 1);
+  await client.writeRows("douyin", `${sheetId}!${statusColumn}${headerRow}:${reasonColumn}${headerRow}`, [["筛选状态", "简短理由"]]);
+  await client.writeRows("douyin", `${sheetId}!${assetColumn}${headerRow}:${assetColumn}${headerRow}`, [["本地素材目录"]]);
   for (const feedback of feedbackRows) {
     await client.writeRows(
       "douyin",
-      `${sheetId}!${DOUYIN_STATUS_REASON_START_COLUMN}${feedback.sourceRowNumber}:${DOUYIN_STATUS_REASON_END_COLUMN}${feedback.sourceRowNumber}`,
+      `${sheetId}!${statusColumn}${feedback.sourceRowNumber}:${reasonColumn}${feedback.sourceRowNumber}`,
       [feedback.row.slice(0, 2)]
     );
     await client.writeRows(
       "douyin",
-      `${sheetId}!${DOUYIN_ASSET_DIR_COLUMN}${feedback.sourceRowNumber}:${DOUYIN_ASSET_DIR_COLUMN}${feedback.sourceRowNumber}`,
+      `${sheetId}!${assetColumn}${feedback.sourceRowNumber}:${assetColumn}${feedback.sourceRowNumber}`,
       [[feedback.row[2] || ""]]
     );
   }
@@ -480,4 +488,15 @@ function headerRowFor(client, sheetKey) {
 
 function dataStartRowFor(client, sheetKey) {
   return typeof client?.dataStartRow === "function" ? client.dataStartRow(sheetKey) : 2;
+}
+
+function columnName(index) {
+  let value = index;
+  let result = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    result = String.fromCharCode(65 + remainder) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
 }

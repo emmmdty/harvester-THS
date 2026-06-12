@@ -45,12 +45,34 @@ export function shouldBlockResource({ mode, resourceType }) {
   return isConservativeMode(mode) && HEAVY_RESOURCE_TYPES.has(String(resourceType || ""));
 }
 
+export async function withTimeoutFallback(fn, { timeoutMs = 0, fallback = null, onTimeout = null } = {}) {
+  const timeout = Math.max(0, Number(timeoutMs) || 0);
+  if (timeout <= 0) return fn();
+
+  let timeoutId = null;
+  let didTimeout = false;
+  const operation = Promise.resolve().then(fn);
+  const timeoutPromise = new Promise((resolve) => {
+    timeoutId = setTimeout(() => {
+      didTimeout = true;
+      if (typeof onTimeout === "function") onTimeout();
+      resolve(typeof fallback === "function" ? fallback() : fallback);
+    }, timeout);
+  });
+
+  try {
+    return await Promise.race([operation, timeoutPromise]);
+  } finally {
+    if (!didTimeout && timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export async function installConservativeResourceBlocker(context, { mode, label = "轻量页面模式" } = {}) {
   if (!isConservativeMode(mode)) {
     return {
       enabled: false,
-      async disableTemporarily(fn) {
-        return fn();
+      async disableTemporarily(fn, options = {}) {
+        return withTimeoutFallback(fn, options);
       },
       async close() {}
     };
@@ -84,10 +106,10 @@ export async function installConservativeResourceBlocker(context, { mode, label 
 
   return {
     enabled: true,
-    async disableTemporarily(fn) {
+    async disableTemporarily(fn, options = {}) {
       await disable();
       try {
-        return await fn();
+        return await withTimeoutFallback(fn, options);
       } finally {
         await enable();
       }

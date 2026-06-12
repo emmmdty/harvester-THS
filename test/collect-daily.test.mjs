@@ -4,7 +4,27 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { collectDaily } from "../src/collect-daily-runner.mjs";
-import { dailySummaryPath } from "../src/platform-config.mjs";
+import { dailySummaryPath, DAILY_PLATFORM_IDS, resolvePlatformPaths } from "../src/platform-config.mjs";
+
+const noOpMaterialCache = async () => ({
+  manifests: [],
+  stats: { total: 1, failed: 0, consecutiveFailures: 0 }
+});
+const passThroughClassify = async ({ items }) => items;
+
+test("collect:daily platform paths only point to daily crawler entrypoints", () => {
+  const scripts = Object.fromEntries(DAILY_PLATFORM_IDS.map((platformId) => [
+    platformId,
+    path.basename(resolvePlatformPaths(platformId, "/repo").crawlScriptPath)
+  ]));
+
+  assert.deepEqual(scripts, {
+    douyin: "crawl-douyin.mjs",
+    xhs: "crawl-xhs.mjs",
+    bilibili: "crawl-bilibili.mjs"
+  });
+  assert.equal(Object.values(scripts).some((script) => /history|sync|oneoff/u.test(script)), false);
+});
 
 test("collectDaily writes each successful platform before moving to the next one", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-daily-"));
@@ -24,6 +44,8 @@ test("collectDaily writes each successful platform before moving to the next one
       calls.push(`read:${platformId}`);
       return [{ link: `${platformId}-link`, publishedAt: "2026-05-19" }];
     },
+    cachePlatformMaterials: noOpMaterialCache,
+    classifyPlatformItems: passThroughClassify,
     writePlatformJsonToFeishu: async ({ platformId }) => {
       calls.push(`write:${platformId}`);
       return { collected: 1, feishu: { created: 1, skipped: 0 } };
@@ -68,6 +90,8 @@ test("collectDaily crawls one inclusive date range and writes the successful ran
         { link: `${platformId}-0522`, publishedAt: "2026-05-22" }
       ];
     },
+    cachePlatformMaterials: noOpMaterialCache,
+    classifyPlatformItems: passThroughClassify,
     writePlatformJsonToFeishu: async ({ platformId, sinceDate, untilDate }) => {
       calls.push(`write:${platformId}:${sinceDate}->${untilDate}`);
       return {
@@ -125,6 +149,8 @@ test("collectDaily records platform failures but still writes successful platfor
       calls.push(`read:${platformId}`);
       return [{ link: `${platformId}-link`, publishedAt: "2026-05-19" }];
     },
+    cachePlatformMaterials: noOpMaterialCache,
+    classifyPlatformItems: passThroughClassify,
     writePlatformJsonToFeishu: async ({ platformId }) => {
       calls.push(`write:${platformId}`);
       return { collected: 1, feishu: { created: 1, skipped: 0 } };

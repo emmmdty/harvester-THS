@@ -45,7 +45,7 @@ const SHEET_TEMPLATES = {
     styles: [
       ["A1:C1", DARK_STYLE],
       ["D1:I1", RED_STYLE],
-      ["A4:K4", HEADER_STYLE],
+      [`A4:${columnName(PLATFORM_HEADERS.douyin.length)}4`, HEADER_STYLE],
       ["A2:I3", CENTER_STYLE]
     ],
     frozenRowCount: 4
@@ -55,13 +55,13 @@ const SHEET_TEMPLATES = {
     width: PLATFORM_HEADERS.xhs.length,
     headerRow: PLATFORM_SHEET_LAYOUTS.xhs.headerRow,
     dataStartRow: PLATFORM_SHEET_LAYOUTS.xhs.dataStartRow,
-    topRows: [["2026目标  5个爆款/月", "", "", "", "", "", "", ""]],
+    topRows: [["2026目标  5个爆款/月"]],
     headers: PLATFORM_HEADERS.xhs,
-    legacyHeaders: [PLATFORM_HEADERS.xhs],
-    merges: ["A1:H1"],
+    legacyHeaders: [PLATFORM_HEADERS.xhs, ...(PLATFORM_LEGACY_HEADERS.xhs || [])],
+    merges: [`A1:${columnName(PLATFORM_HEADERS.xhs.length)}1`],
     styles: [
-      ["A1:H1", DARK_STYLE],
-      ["A2:H2", HEADER_STYLE]
+      [`A1:${columnName(PLATFORM_HEADERS.xhs.length)}1`, DARK_STYLE],
+      [`A2:${columnName(PLATFORM_HEADERS.xhs.length)}2`, HEADER_STYLE]
     ],
     frozenRowCount: 2
   },
@@ -73,10 +73,10 @@ const SHEET_TEMPLATES = {
     topRows: [["2026目标  2个爆款/月"]],
     headers: PLATFORM_HEADERS.bilibili,
     legacyHeaders: [PLATFORM_HEADERS.bilibili, ...(PLATFORM_LEGACY_HEADERS.bilibili || [])],
-    merges: ["A1:G1"],
+    merges: [`A1:${columnName(PLATFORM_HEADERS.bilibili.length)}1`],
     styles: [
-      ["A1:G1", DARK_STYLE],
-      ["A2:G2", HEADER_STYLE]
+      [`A1:${columnName(PLATFORM_HEADERS.bilibili.length)}1`, DARK_STYLE],
+      [`A2:${columnName(PLATFORM_HEADERS.bilibili.length)}2`, HEADER_STYLE]
     ],
     frozenRowCount: 2
   },

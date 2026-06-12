@@ -4,6 +4,9 @@ import { spawn } from "node:child_process";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
 import { readPlatformItems as defaultReadPlatformItems, writePlatformJsonToFeishu as defaultWritePlatformJsonToFeishu } from "./feishu-writer.mjs";
 import { dailySummaryPath, getPlatformConfig, resolvePlatformPaths } from "./platform-config.mjs";
+import { classifyPlatformItems as defaultClassifyPlatformItems } from "./daily/classify-platform.mjs";
+import { cachePlatformMaterials as defaultCachePlatformMaterials } from "./materials/cache.mjs";
+import { shouldBlockFeishuWriteback } from "./materials/failure-gate.mjs";
 
 const NODE_BIN = process.execPath;
 
@@ -18,6 +21,8 @@ export async function collectDaily({
   createClient = () => new FeishuSheetsClient(loadFeishuConfig()),
   runPlatformCrawler = defaultRunPlatformCrawler,
   readPlatformItems = defaultReadPlatformItems,
+  cachePlatformMaterials = defaultCachePlatformMaterials,
+  classifyPlatformItems = defaultClassifyPlatformItems,
   writePlatformJsonToFeishu = defaultWritePlatformJsonToFeishu,
   log = console.log
 }) {
@@ -47,11 +52,35 @@ export async function collectDaily({
     try {
       await runPlatformCrawler(platformId, sinceDate, untilDate, crawlMode, { root });
       const items = await readPlatformItems(platformId, sinceDate, root, untilDate);
+      const materialResult = await cachePlatformMaterials({
+        platformId,
+        items,
+        targetDate: sinceDate,
+        sinceDate,
+        untilDate,
+        root,
+        log
+      });
+      const gate = materialResult.gate || shouldBlockFeishuWriteback(materialResult.stats || {});
       const platformSummary = {
         status: "collected",
         collected: items.length,
+        materials: materialResult.stats || null,
         feishu: null
       };
+      if (gate.blocked) {
+        platformSummary.status = "asset_blocked";
+        platformSummary.error = gate.reason;
+        summary.platforms[platformId] = platformSummary;
+        log(`${config.label} 素材获取异常：${gate.reason}`);
+        continue;
+      }
+      const classifiedItems = await classifyPlatformItems({
+        platformId,
+        items,
+        materialResult,
+        log
+      });
       if (!skipFeishu) {
         client = client || createClient();
         const result = await writePlatformJsonToFeishu({
@@ -60,11 +89,14 @@ export async function collectDaily({
           sinceDate,
           untilDate,
           root,
-          client
+          client,
+          items: classifiedItems
         });
         platformSummary.status = "written";
         platformSummary.feishu = result.feishu;
         log(`${config.label} 飞书写入：新增 ${result.feishu.created}，更新 ${result.feishu.updated || 0}，跳过 ${result.feishu.skipped}`);
+      } else {
+        platformSummary.status = "classified";
       }
       summary.platforms[platformId] = platformSummary;
     } catch (error) {
@@ -78,10 +110,12 @@ export async function collectDaily({
     }
   }
 
-  const failedPlatforms = platforms.filter((platformId) => summary.platforms[platformId]?.status === "failed");
+  const failedPlatforms = platforms.filter((platformId) => ["failed", "asset_blocked"].includes(summary.platforms[platformId]?.status));
   summary.ok = failedPlatforms.length === 0;
   if (failedPlatforms.length > 0) {
-    summary.partialFailureReason = "部分平台采集失败，成功平台已按日期写入飞书。";
+    summary.partialFailureReason = failedPlatforms.some((platformId) => summary.platforms[platformId]?.status === "asset_blocked")
+      ? "部分平台素材获取失败达到阈值，已停止对应平台飞书回填并优先保留素材获取证据。"
+      : "部分平台采集失败，成功平台已按日期写入飞书。";
     log(`\n每日采集存在失败平台：${failedPlatforms.map((id) => getPlatformConfig(id).label).join("、")}。成功平台已继续写入。`);
   }
   summary.finishedAt = new Date().toISOString();

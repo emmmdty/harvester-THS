@@ -138,6 +138,24 @@ test("crawlers count unknown dates only from authoritative platform date sources
   assert.match(crawlerFiles.bilibili, /if \(!detail\.publishedAt\) \{[\s\S]*audit\?\.recordUnknownDate\(\);/);
 });
 
+test("Douyin crawler supports a global detail check limit for verification runs", async () => {
+  const source = await fs.readFile(path.join(process.cwd(), "src", "crawl-douyin.mjs"), "utf8");
+
+  assert.match(source, /const MAX_TOTAL_DETAIL_PAGES = Number\(process\.env\.MAX_TOTAL_DETAIL_PAGES \|\| 0\);/);
+  assert.match(source, /const totalDetailBudget = createTotalDetailBudget\(MAX_TOTAL_DETAIL_PAGES\);/);
+  assert.match(source, /totalDetailBudget,/);
+  assert.match(source, /if \(totalDetailBudget\.reached\(\)\) \{/);
+  assert.match(source, /totalDetailBudget\.record\(\);/);
+});
+
+test("Douyin crawler accepts post-list API responses as detail evidence for note pages", async () => {
+  const source = await fs.readFile(path.join(process.cwd(), "src", "crawl-douyin.mjs"), "utf8");
+
+  assert.match(source, /url\.pathname\.includes\("\/aweme\/v1\/web\/aweme\/post\/"\)/);
+  assert.match(source, /json\.aweme_list\.some\(\(item\) => String\(item\?\.aweme_id \|\| ""\) === itemId\)/);
+  assert.match(source, /extractDouyinApiDetail\(json, \{ itemId \}\)/);
+});
+
 test("resource blocker aborts heavy assets only in conservative mode", async () => {
   const { shouldBlockResource } = await loadRuntime();
 
@@ -146,6 +164,42 @@ test("resource blocker aborts heavy assets only in conservative mode", async () 
   assert.equal(shouldBlockResource({ mode: "conservative", resourceType: "font" }), true);
   assert.equal(shouldBlockResource({ mode: "conservative", resourceType: "script" }), false);
   assert.equal(shouldBlockResource({ mode: "legacy", resourceType: "image" }), false);
+});
+
+test("resource blocker temporary disable returns fallback and re-enables on timeout", async () => {
+  const { installConservativeResourceBlocker } = await loadRuntime();
+  const calls = [];
+  const context = {
+    async route() {
+      calls.push("route");
+    },
+    async unroute() {
+      calls.push("unroute");
+    }
+  };
+
+  const blocker = await installConservativeResourceBlocker(context, {
+    mode: "conservative",
+    label: "测试轻量模式"
+  });
+  const result = await blocker.disableTemporarily(() => new Promise(() => {}), {
+    timeoutMs: 10,
+    fallback: "timeout-fallback",
+    onTimeout() {
+      calls.push("timeout");
+    }
+  });
+
+  assert.equal(result, "timeout-fallback");
+  assert.deepEqual(calls, ["route", "unroute", "timeout", "route"]);
+});
+
+test("Douyin unblocked list retry is bounded by an explicit timeout", async () => {
+  const source = await fs.readFile(path.join(process.cwd(), "src", "crawl-douyin.mjs"), "utf8");
+
+  assert.match(source, /DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS/);
+  assert.match(source, /disableTemporarily\([\s\S]*timeoutMs: DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS/);
+  assert.match(source, /抖音列表页关闭轻量模式重试超时/);
 });
 
 test("Douyin share copy is opt-in in conservative mode and preserved in legacy mode", async () => {

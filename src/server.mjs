@@ -4,13 +4,15 @@ import { existsSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import cron from "node-cron";
 import { isDocker } from "./browser-env.mjs";
+import { cleanupCacheStorage, summarizeCacheStorage } from "./cache-summary.mjs";
+import { runConfigChecks } from "./config-checks.mjs";
 import { addDaysToDateString, endExclusiveDateToInclusiveUntilDate, normalizeDateInput, previousDateString } from "./date-utils.mjs";
-import { writePlatformJsonToFeishu } from "./feishu-writer.mjs";
 import { checkPlatformLogin, summarizeLoginCheckResults } from "./login-check.mjs";
 import { deletePlatformAccount, readPlatformAccounts, upsertPlatformAccount } from "./platform-accounts.mjs";
+import { loadPanelSettings, mergeSettingsPatch, panelSettingsEnv, publicEffectivePanelSettings, savePanelSettings } from "./panel-settings.mjs";
 import { recordSchedulerRun } from "./scheduler-run-history.mjs";
 import { normalizeCrawlMode } from "./crawl-runtime.mjs";
 import {
@@ -65,6 +67,7 @@ const PLATFORMS = {
     outputPrefix: "daily_collect_"
   }
 };
+const DAILY_PIPELINE_PLATFORM_IDS = new Set(["xhs", "douyin", "bilibili"]);
 
 let currentRun = null;
 let loginProcess = null;
@@ -90,12 +93,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/status") {
+      if (isSettingsPanelRequest(url)) {
+        sendJson(res, statusPayload("settings"));
+        return;
+      }
       const platform = getPlatform(url.searchParams.get("platform"));
       sendJson(res, statusPayload(platform.id));
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/outputs") {
+      if (isSettingsPanelRequest(url)) {
+        sendJson(res, { files: [] });
+        return;
+      }
       const platform = getPlatform(url.searchParams.get("platform"));
       sendJson(res, { files: await listOutputs(platform.id) });
       return;
@@ -157,8 +168,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/feishu/write") {
-      const body = await readJson(req);
-      await writeFeishu(res, getPlatform(body?.platform), body);
+      writeFeishu(res);
       return;
     }
 
@@ -175,6 +185,33 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/scheduler") {
       sendJson(res, schedulerPayload());
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/settings") {
+      await getSettings(res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/settings") {
+      const body = await readJson(req);
+      await updateSettings(res, body);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/settings/checks") {
+      const result = await runConfigChecks({ env: await effectiveEnv() });
+      sendJson(res, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/cache/cleanup") {
+      await cleanupCache(res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/cache/open") {
+      await openCacheDirectory(res);
       return;
     }
 
@@ -360,14 +397,11 @@ async function startCrawl(res, platform, body) {
   const rangeText = formatHalfOpenDateRange(sinceDate, endExclusiveDate);
   appendLog(platform.id, `启动${platform.label}任务，日期：${rangeText}，模式：${modeLabel(crawlMode)}，启动时间：${formatTimestamp()}`);
 
-  const args = platform.id === "daily"
-    ? [platform.crawlScript, "--since", sinceDate, "--until", endExclusiveDate]
-    : [platform.crawlScript, "--since", sinceDate, "--until", crawlerUntilDate];
-  args.push("--mode", crawlMode);
+  const args = platformCrawlArgs(platform, sinceDate, endExclusiveDate, crawlerUntilDate, crawlMode);
 
   currentRun = spawn(NODE_BIN, args, {
     cwd: ROOT,
-    env: { ...process.env, FORCE_COLOR: "0" },
+    env: { ...await effectiveEnv(), FORCE_COLOR: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   currentRun.platform = platform;
@@ -388,6 +422,33 @@ async function startCrawl(res, platform, body) {
 
   sendJson(res, { ok: true });
   broadcastStatus();
+}
+
+async function getSettings(res) {
+  const settings = await loadPanelSettings({ root: ROOT });
+  sendJson(res, { ok: true, settings: publicEffectivePanelSettings(settings, process.env), cache: await summarizeCacheStorage(ROOT) });
+}
+
+async function updateSettings(res, body = {}) {
+  const current = await loadPanelSettings({ root: ROOT });
+  const merged = mergeSettingsPatch(current, body?.settings || body || {});
+  await savePanelSettings({ root: ROOT, settings: merged });
+  sendJson(res, { ok: true, settings: publicEffectivePanelSettings(merged, process.env), cache: await summarizeCacheStorage(ROOT) });
+}
+
+async function effectiveEnv() {
+  const settings = await loadPanelSettings({ root: ROOT });
+  return panelSettingsEnv(settings, process.env);
+}
+
+function platformCrawlArgs(platform, sinceDate, endExclusiveDate, crawlerUntilDate, crawlMode) {
+  if (platform.id === "daily") {
+    return [platform.crawlScript, "--since", sinceDate, "--until", endExclusiveDate, "--mode", crawlMode];
+  }
+  if (DAILY_PIPELINE_PLATFORM_IDS.has(platform.id)) {
+    return [PLATFORMS.daily.crawlScript, "--platform", platform.id, "--since", sinceDate, "--until", endExclusiveDate, "--mode", crawlMode];
+  }
+  return [platform.crawlScript, "--since", sinceDate, "--until", crawlerUntilDate, "--mode", crawlMode];
 }
 
 async function checkPlatformAccountConfig(platform) {
@@ -442,52 +503,8 @@ async function checkDailyPlatformLogins() {
   }
 }
 
-async function writeFeishu(res, platform, body) {
-  if (platform.id === "daily") {
-    sendJson(res, { error: "全渠道采集任务会自动写入飞书；单独写入请切换到抖音、小红书或B站。" }, 400);
-    return;
-  }
-
-  if (currentRun || loginProcess || loginCheckRunning) {
-    sendJson(res, { error: "当前有爬取任务、登录浏览器或登录检测正在运行，请结束后再写入飞书。" }, 409);
-    return;
-  }
-
-  const dateInput = String(body?.targetDate || body?.since || "").trim();
-  let sinceDate;
-  let endExclusiveDate;
-  let crawlerUntilDate;
-  try {
-    sinceDate = normalizeDateInput(dateInput);
-    endExclusiveDate = normalizeDateInput(String(body?.until || sinceDate).trim());
-    crawlerUntilDate = endExclusiveDateToInclusiveUntilDate(sinceDate, endExclusiveDate);
-  } catch {
-    sendJson(res, { error: "请输入有效日期，且结束日期必须晚于开始日期，例如 2026-05-19 -> 2026-05-20" }, 400);
-    return;
-  }
-
-  appendLog(platform.id, `${platform.label}开始写入飞书，日期：${formatHalfOpenDateRange(sinceDate, endExclusiveDate)}，启动时间：${formatTimestamp()}`);
-  try {
-    const result = await writePlatformJsonToFeishu({
-      platformId: platform.id,
-      sinceDate,
-      untilDate: crawlerUntilDate,
-      accountName: "",
-      root: ROOT
-    });
-    appendLog(
-      platform.id,
-      `${platform.label}飞书写入完成：采集 ${result.collected}，新增 ${result.feishu.created}，跳过 ${result.feishu.skipped}`
-    );
-    for (const warning of result.feishu.warnings || []) {
-      appendLog(platform.id, `${platform.label}飞书写入提示：${warning}`);
-    }
-    sendJson(res, { ok: true, platform: platform.id, sinceDate, endExclusiveDate, crawlerUntilDate, accountName: "", ...result });
-  } catch (error) {
-    const message = error.message || String(error);
-    appendLog(platform.id, `${platform.label}飞书写入失败：${message}`);
-    sendJson(res, { error: message }, 500);
-  }
+function writeFeishu(res) {
+  sendJson(res, { error: "写入飞书入口已合并到开始爬取，请直接点击开始爬取。" }, 410);
 }
 
 function stopCrawl(res) {
@@ -505,6 +522,46 @@ function clearLogs(res, platform) {
   logsByPlatform.set(platform.id, []);
   broadcast({ type: "logs-cleared", platform: platform.id });
   sendJson(res, { ok: true, platform: platform.id });
+}
+
+async function cleanupCache(res) {
+  const result = await cleanupCacheStorage(ROOT);
+  appendLog("daily", `缓存清理完成：删除 ${result.removed.length} 个缓存目录。`);
+  sendJson(res, { ok: true, removed: result.removed, cache: result.cache });
+}
+
+async function openCacheDirectory(res) {
+  const cacheSummary = await summarizeCacheStorage(ROOT);
+  await fs.mkdir(cacheSummary.path, { recursive: true });
+  const opener = cacheDirectoryOpener(cacheSummary.path);
+  const child = spawn(opener.command, opener.args, {
+    detached: true,
+    stdio: "ignore"
+  });
+  child.unref();
+  child.on("error", (error) => {
+    appendLog("daily", `打开缓存目录失败：${error.message || String(error)}；路径：${cacheSummary.path}`);
+  });
+  sendJson(res, {
+    ok: true,
+    path: cacheSummary.path,
+    fileUrl: pathToFileUrl(cacheSummary.path),
+    cache: cacheSummary
+  });
+}
+
+function cacheDirectoryOpener(targetPath) {
+  if (process.platform === "darwin") {
+    return { command: "open", args: [targetPath] };
+  }
+  if (process.platform === "win32") {
+    return { command: "explorer", args: [targetPath] };
+  }
+  return { command: "xdg-open", args: [targetPath] };
+}
+
+function pathToFileUrl(targetPath) {
+  return pathToFileURL(targetPath).href;
 }
 
 function handleEvents(req, res) {
@@ -693,6 +750,10 @@ function getPlatform(value) {
   return resolvePanelPlatform(value, PLATFORMS);
 }
 
+function isSettingsPanelRequest(url) {
+  return String(url.searchParams.get("platform") || "").trim() === "settings";
+}
+
 async function loadSchedulerConfig() {
   try {
     const text = await fs.readFile(SCHEDULER_PATH, "utf8");
@@ -776,7 +837,7 @@ async function startScheduledDailyRun() {
     targetDate
   ], {
     cwd: ROOT,
-    env: { ...process.env, FORCE_COLOR: "0" },
+    env: { ...await effectiveEnv(), FORCE_COLOR: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   currentRun.platform = PLATFORMS.daily;

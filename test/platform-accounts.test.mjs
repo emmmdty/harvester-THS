@@ -105,3 +105,15 @@ test("normalizePlatformAccount rejects unsupported platform urls", () => {
     /B站主页链接/
   );
 });
+
+test("repository XHS account config includes the welfare account for daily collection", async () => {
+  const config = JSON.parse(await fs.readFile(path.join(process.cwd(), "platform-accounts.json"), "utf8"));
+
+  assert.equal(
+    config.xhs.some((account) => (
+      account.name === "同花顺新手福利官"
+      && account.url === "https://www.xiaohongshu.com/user/profile/64b74fc9000000000b0162c9"
+    )),
+    true
+  );
+});

@@ -22,9 +22,10 @@
           <button id="platform-douyin" type="button" class="platform-tab" data-platform="douyin">抖音</button>
           <button id="platform-bilibili" type="button" class="platform-tab" data-platform="bilibili">B站</button>
           <button id="platform-daily" type="button" class="platform-tab" data-platform="daily">全渠道</button>
+          <button id="platform-settings" type="button" class="platform-tab" data-platform="settings">系统设置</button>
         </section>
 
-        <section class="toolbar" aria-label="爬取控制">
+        <section class="toolbar" id="crawler-toolbar" aria-label="爬取控制">
           <div class="toolbar-fields">
             <label class="field">
               <span id="date-label">起始日期</span>
@@ -46,7 +47,6 @@
             <button id="login" type="button" class="secondary">打开登录</button>
             <button id="login-check" type="button" class="secondary">检测登录</button>
             <button id="run" type="button" class="primary">开始爬取</button>
-            <button id="feishu-write" type="button" class="secondary">写入飞书</button>
             <button id="stop" type="button" class="danger" disabled>停止</button>
           </div>
           <div class="login-check-status" id="login-check-status">未检测</div>
@@ -70,7 +70,7 @@
           <div class="schedule-status" id="schedule-status">未启用</div>
         </section>
 
-        <section class="workspace">
+        <section class="workspace" id="workspace">
           <div class="panel logs-panel">
             <div class="panel-title">
               <h2>运行日志</h2>
@@ -108,6 +108,102 @@
             <div id="account-list" class="account-list"></div>
           </div>
         </details>
+
+        <section class="settings-manager settings-page" id="settings-page" hidden aria-label="系统设置与检测">
+          <div class="settings-page-title">
+            <h2>系统设置与检测</h2>
+            <div class="settings-status" id="settings-status">未检测</div>
+          </div>
+          <div class="settings-manager-body">
+            <div class="settings-form">
+              <section class="settings-group" aria-label="飞书配置">
+                <h3>飞书</h3>
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>App ID</span>
+                    <input id="setting-feishu-app-id" type="text" autocomplete="off">
+                  </label>
+                  <label class="field">
+                    <span>App Secret <small id="setting-feishu-app-secret-summary">未设置</small></span>
+                    <input id="setting-feishu-app-secret" type="password" autocomplete="new-password" placeholder="留空保持不变">
+                  </label>
+                  <label class="field">
+                    <span>Spreadsheet Token</span>
+                    <input id="setting-feishu-spreadsheet-token" type="text" autocomplete="off">
+                  </label>
+                  <label class="field">
+                    <span>Wiki Token</span>
+                    <input id="setting-feishu-wiki-token" type="text" autocomplete="off">
+                  </label>
+                  <label class="field">
+                    <span>抖音 Sheet ID</span>
+                    <input id="setting-feishu-sheet-douyin" type="text" autocomplete="off">
+                  </label>
+                  <label class="field">
+                    <span>小红书 Sheet ID</span>
+                    <input id="setting-feishu-sheet-xhs" type="text" autocomplete="off">
+                  </label>
+                  <label class="field">
+                    <span>B站 Sheet ID</span>
+                    <input id="setting-feishu-sheet-bilibili" type="text" autocomplete="off">
+                  </label>
+                </div>
+              </section>
+
+              <section class="settings-group" aria-label="AI 配置">
+                <h3>AI</h3>
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>MiniMax API Key <small id="setting-minimax-api-key-summary">未设置</small></span>
+                    <input id="setting-minimax-api-key" type="password" autocomplete="new-password" placeholder="留空保持不变">
+                  </label>
+                  <label class="field">
+                    <span>MiniMax Base URL</span>
+                    <input id="setting-minimax-base-url" type="url" autocomplete="off" value="https://api.minimaxi.com/v1">
+                  </label>
+                  <label class="field">
+                    <span>MiniMax Model</span>
+                    <input id="setting-minimax-model" type="text" autocomplete="off" value="MiniMax-M3">
+                  </label>
+                  <label class="field">
+                    <span>DeepSeek API Key <small id="setting-deepseek-api-key-summary">未设置</small> <small id="setting-deepseek-config-status">未配置</small></span>
+                    <input id="setting-deepseek-api-key" type="password" autocomplete="new-password" placeholder="留空保持不变">
+                  </label>
+                  <label class="field">
+                    <span>DeepSeek Base URL</span>
+                    <input id="setting-deepseek-base-url" type="url" autocomplete="off" value="https://api.deepseek.com">
+                  </label>
+                  <label class="field">
+                    <span>DeepSeek Model</span>
+                    <input id="setting-deepseek-model" type="text" autocomplete="off" value="deepseek-v4-flash">
+                  </label>
+                </div>
+              </section>
+
+              <section class="settings-group" aria-label="缓存信息">
+                <h3>缓存</h3>
+                <div class="settings-cache-summary">
+                  <div class="settings-info-line">
+                    <span>缓存位置</span>
+                    <strong id="cache-path">未加载</strong>
+                  </div>
+                  <div class="settings-info-line">
+                    <span>缓存大小</span>
+                    <strong id="cache-size">未加载</strong>
+                  </div>
+                  <button id="open-cache-dir" type="button" class="secondary">打开缓存目录</button>
+                </div>
+              </section>
+            </div>
+            <div class="settings-actions">
+              <button id="save-settings" type="button" class="primary">保存设置</button>
+              <button id="run-config-checks" type="button" class="secondary">检测配置</button>
+              <button id="cleanup-cache" type="button" class="secondary">清理缓存</button>
+            </div>
+            <div class="settings-note">API Key 和 App Secret 会加密保存在本机 .runtime，页面只显示是否已设置和尾号。</div>
+            <div id="settings-check-list" class="settings-check-list"></div>
+          </div>
+        </section>
       </div>
     </main>
 

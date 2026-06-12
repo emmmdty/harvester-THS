@@ -30,6 +30,45 @@ function cellText(row, index) {
   return typeof cell === "object" ? cell.text : cell;
 }
 
+const douyinSeparatorRow = (title) => ["", title, "", "", "", "", "", "", "", "", "", "", "", ""];
+const bilibiliSeparatorRow = (title) => ["", title, "", "", "", "", "", "", "", "", "", "", "", ""];
+function bilibiliRow({ sequence = "1", date = "05 30", link, bvid, account = "投资号", title = "", tags = "", contentType = "无", review = "需审核" }) {
+  return [
+    sequence,
+    date,
+    typeof link === "string" ? buildFeishuUrlCell(link) : link,
+    bvid,
+    "",
+    "",
+    "",
+    "",
+    account,
+    "视频",
+    title,
+    tags,
+    contentType,
+    review
+  ];
+}
+function douyinRow({ sequence = "1", date = "05 30", link, title = "", tags = "", account = "投资号", contentType = "图文", review = "通过" }) {
+  return [
+    sequence,
+    date,
+    typeof link === "string" ? buildFeishuUrlCell(link) : link,
+    account,
+    contentType,
+    "",
+    "",
+    "",
+    "",
+    "",
+    "视频",
+    title,
+    tags,
+    review
+  ];
+}
+
 test("repairPlatformRows moves XHS rows by note-ID publish date and keeps URL text equal to URL", async () => {
   const id = "6a198e0c0000000036000f68";
   const link = `https://www.xiaohongshu.com/discovery/item/${id}?xhsshare=pc_web&source=webshare&xsec_source=pc_share`;
@@ -40,9 +79,9 @@ test("repairPlatformRows moves XHS rows by note-ID publish date and keeps URL te
   const result = await repairPlatformRows({
     platformId: "xhs",
     rows: [
-      ["", "0530 投稿视频", "", "", "", "", "", ""],
-      ["1", "05 30", { type: "url", text: "打开链接", link }, id, "投资号", "图文", "通过", ""],
-      ["", "0529 投稿视频", "", "", "", "", "", ""]
+      ["", "0530 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+      ["1", "05 30", { type: "url", text: "打开链接", link }, id, "投资号", "图文", "", "", "", "", "", "", "", "", "通过", "", "图文"],
+      ["", "0529 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
     ],
     dataStartRow: 3,
     metadataStore: store
@@ -58,7 +97,7 @@ test("repairPlatformRows moves XHS rows by note-ID publish date and keeps URL te
   assert.equal(repairedRow[1], "05 29");
   assert.equal(cellLink(repairedRow, 2), cellText(repairedRow, 2));
   assert.match(cellLink(repairedRow, 2), /^https:\/\/www\.xiaohongshu\.com\/discovery\/item\//);
-  assert.equal(repairedRow[7], "#投资 #理财");
+  assert.equal(repairedRow[11], "#投资 #理财");
 });
 
 test("repairPlatformRows resolves Douyin short links, fills deterministic metadata, and moves by item ID date", async () => {
@@ -78,9 +117,9 @@ test("repairPlatformRows resolves Douyin short links, fills deterministic metada
   const result = await repairPlatformRows({
     platformId: "douyin",
     rows: [
-      ["", "0530 投稿视频", "", "", "", "", "", "", "", "", ""],
-      ["1", "05 30", { type: "url", text: "打开链接", link: "https://v.douyin.com/example/" }, "", "", "", "", "投资号", "图文", "通过", ""],
-      ["", "0529 投稿视频", "", "", "", "", "", "", "", "", ""]
+      douyinSeparatorRow("0530 投稿视频"),
+      douyinRow({ link: { type: "url", text: "打开链接", link: "https://v.douyin.com/example/" } }),
+      douyinSeparatorRow("0529 投稿视频")
     ],
     dataStartRow: 5,
     metadataStore: store,
@@ -97,8 +136,8 @@ test("repairPlatformRows resolves Douyin short links, fills deterministic metada
   const repairedRow = result.rows.find((row) => cellLink(row, 2) === link);
   assert.equal(repairedRow[1], "05 29");
   assert.equal(cellText(repairedRow, 2), link);
-  assert.equal(repairedRow[3], "确定性标题");
-  assert.equal(repairedRow[4], "#同花顺 #理财");
+  assert.equal(repairedRow[11], "确定性标题");
+  assert.equal(repairedRow[12], "#同花顺 #理财");
 });
 
 test("repairPlatformRows can resolve Douyin URLs without moving date blocks", async () => {
@@ -108,8 +147,12 @@ test("repairPlatformRows can resolve Douyin URLs without moving date blocks", as
   const result = await repairPlatformRows({
     platformId: "douyin",
     rows: [
-      ["", "0530 投稿视频", "", "", "", "", "", "", "", "", ""],
-      ["1", "05 30", { type: "url", text: "打开链接", link: "https://v.douyin.com/example/" }, "旧标题", "#tag", "", "", "投资号", "图文", "通过", ""]
+      douyinSeparatorRow("0530 投稿视频"),
+      douyinRow({
+        link: { type: "url", text: "打开链接", link: "https://v.douyin.com/example/" },
+        title: "旧标题",
+        tags: "#tag"
+      })
     ],
     dataStartRow: 5,
     metadataStore: metadataStore(),
@@ -132,9 +175,9 @@ test("repairPlatformRows fills Bilibili title and tags from API metadata without
   const result = await repairPlatformRows({
     platformId: "bilibili",
     rows: [
-      ["", "0530 投稿视频", "", "", "", "", ""],
-      ["1", "05 30", buildFeishuUrlCell(`https://www.bilibili.com/video/${bvid}?spm_id_from=333`), bvid, "投资号", "", ""],
-      ["", "0528 投稿视频", "", "", "", "", ""]
+      bilibiliSeparatorRow("0530 投稿视频"),
+      bilibiliRow({ link: buildFeishuUrlCell(`https://www.bilibili.com/video/${bvid}?spm_id_from=333`), bvid }),
+      bilibiliSeparatorRow("0528 投稿视频")
     ],
     dataStartRow: 3,
     metadataStore: metadataStore(),
@@ -161,8 +204,8 @@ test("repairPlatformRows fills Bilibili title and tags from API metadata without
   assert.equal(repairedRow[1], "05 28");
   assert.equal(cellLink(repairedRow, 2), link);
   assert.equal(cellText(repairedRow, 2), link);
-  assert.equal(repairedRow[5], "24岁的金融学霸，靠投资存款400万，年化收益36%！");
-  assert.equal(repairedRow[6], "#财经 #金融 #理财 #投资 #谁是理财王");
+  assert.equal(repairedRow[10], "24岁的金融学霸，靠投资存款400万，年化收益36%！");
+  assert.equal(repairedRow[11], "#财经 #金融 #理财 #投资 #谁是理财王");
 });
 
 test("buildLocalMetadataStore reuses previous repair snapshots for deterministic title and tag metadata", async () => {

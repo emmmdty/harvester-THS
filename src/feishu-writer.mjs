@@ -22,9 +22,12 @@ export async function writePlatformJsonToFeishu({
   untilDate = targetDate || sinceDate,
   accountName = "",
   root = process.cwd(),
-  client = null
+  client = null,
+  items: providedItems = null
 }) {
-  const items = await readPlatformItems(platformId, sinceDate, root, untilDate, { accountName });
+  const items = Array.isArray(providedItems)
+    ? providedItems
+    : await readPlatformItems(platformId, sinceDate, root, untilDate, { accountName });
   const writer = client || new FeishuSheetsClient(loadFeishuConfig());
   const warnings = [];
   await configureDropdownsIfAvailable(writer, platformId, warnings);

@@ -15,6 +15,7 @@ import {
   previousDateString
 } from "../src/date-utils.mjs";
 import {
+  BILIBILI_CONTENT_TYPE_DROPDOWN_VALUES,
   buildDailySheetRecords,
   buildFeishuUrlCell,
   CONTENT_TYPE_DROPDOWN_VALUES,
@@ -26,6 +27,7 @@ import {
   normalizeAccountLabel,
   PLATFORM_SHEET_LAYOUTS,
   PLATFORM_HEADERS,
+  rowToFields,
   XHS_ACCOUNT_DROPDOWN_VALUES
 } from "../src/daily-records.mjs";
 import { FeishuSheetsClient, loadFeishuConfig, validateFeishuConfig, writeDailyPlatformRecords } from "../src/feishu-sheets.mjs";
@@ -36,10 +38,10 @@ import { classifyLoginProbe, summarizeLoginCheckResults } from "../src/login-che
 import { spreadsheetSafeText } from "../src/spreadsheet-safe.mjs";
 import { classifyTags } from "../src/tag-rules.mjs";
 
-const PLATFORM_XHS_HEADER = ["编号", "投稿时间", "内容链接", "笔记ID", "账号", "内容类型", "内容类型标签审核", "tag词"];
-const PLATFORM_DOUYIN_HEADER = ["编号", "投稿时间", "内容链接", "标题", "tag词", "筛选状态", "简短理由", "账号", "内容类型", "内容类型标签审核", "本地素材目录"];
+const PLATFORM_XHS_HEADER = ["编号", "投稿时间", "内容链接", "笔记ID", "账号", "内容类型", "是否投放成功", "是否为爆款", "供稿人", "备注", "标题", "tag词", "一级类型", "二级类型", "内容类型标签审核", "AI内容判断备注"];
+const PLATFORM_DOUYIN_HEADER = ["编号", "投稿时间", "内容链接", "账号", "内容类型", "是否投放成功", "是否为爆款", "供稿人", "备注", "作品ID", "作品类型", "标题", "tag词", "一级类型", "二级类型", "内容类型标签审核", "AI内容判断备注"];
 const STEP15_FILTERED_HEADER = ["编号", "投稿时间", "内容链接", "账号", "内容类型", "简短理由", "是否投放成功", "是否为爆款", "供稿人", "备注"];
-const PLATFORM_BILIBILI_HEADER = ["编号", "投稿时间", "内容链接", "短链id", "账号", "标题", "tag词"];
+const PLATFORM_BILIBILI_HEADER = ["编号", "投稿时间", "内容链接", "短链id", "是否投放成功", "是否为爆款", "供稿人", "备注", "账号", "作品类型", "标题", "tag词", "内容类型", "内容类型标签审核", "AI内容判断备注"];
 const EXPECTED_DOUYIN_CONTENT_TYPES = [
   "资讯",
   "财商动画",
@@ -73,9 +75,23 @@ const EXPECTED_XHS_CONTENT_TYPES = [
   "AI视频 虚拟人",
   "段子"
 ];
+const EXPECTED_BILIBILI_CONTENT_TYPES = [
+  "采访内容",
+  "大佬生平",
+  "新手教学指标教学",
+  "海外搬运",
+  "短视频",
+  "无"
+];
 
 function urlCell(link) {
   return { type: "url", text: link, link };
+}
+
+function assertFieldsInclude(actual, expected) {
+  for (const [key, value] of Object.entries(expected)) {
+    assert.deepEqual(actual[key], value, key);
+  }
 }
 
 async function assertNewDateInsertRow({ platformId, targetDate, existingDate, expectedStartRow }) {
@@ -122,7 +138,7 @@ function separatorRow(platformId, title) {
 
 function existingMaterialRow(platformId, date) {
   const displayDate = formatDisplayDate(date);
-  if (platformId === "xhs") return ["1", displayDate, `${platformId}-old-link`, `${platformId}-old-id`, "投资号", "图文", ""];
+  if (platformId === "xhs") return ["1", displayDate, `${platformId}-old-link`, `${platformId}-old-id`, "投资号", "图文", "", "", "", "", "旧标题", "", "#old"];
   if (platformId === "bilibili") return ["1", displayDate, `${platformId}-old-link`, "BVold", "投资号", "旧标题", "#old"];
   return ["1", displayDate, `${platformId}-old-link`, "投资号", "资讯", "旧标题", "#tag"];
 }
@@ -312,43 +328,61 @@ test("daily records include a separator row and per-platform material fields", (
       link: "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare",
       id: "6a0c4c5e000000003502a761",
       accountName: "同花顺投资",
-      contentType: "图文",
-      tags: "#同顺图解",
+      contentType: "不应采用",
+      primaryType: "视频",
+      secondaryType: "资讯",
+      title: "小红书标题",
+      tags: "#同顺盘点",
       publishedAt: "2026-05-19"
     }
   ]);
 
   assert.equal(rows.length, 2);
-  assert.deepEqual(mapDailyRecordToFeishuFields("xhs", rows[0]), {
+  assert.deepEqual(PLATFORM_HEADERS.xhs, PLATFORM_XHS_HEADER);
+  assert.equal(PLATFORM_HEADERS.xhs.includes("图文/视频"), false);
+  assertFieldsInclude(mapDailyRecordToFeishuFields("xhs", rows[0]), {
     "编号": "",
     "投稿时间": "0519 投稿视频",
     "内容链接": "",
     "笔记ID": "",
     "账号": "",
     "内容类型": "",
+    "是否投放成功": "",
+    "是否为爆款": "",
+    "供稿人": "",
+    "备注": "",
+    "标题": "",
+    "tag词": "",
+    "一级类型": "",
+    "二级类型": "",
     "内容类型标签审核": "",
-    "tag词": ""
+    "AI内容判断备注": ""
   });
-  assert.deepEqual(mapDailyRecordToFeishuFields("xhs", rows[1]), {
+  assertFieldsInclude(mapDailyRecordToFeishuFields("xhs", rows[1]), {
     "编号": "1",
-    "投稿时间": "05 19",
+    "投稿时间": "2026-05-19",
     "内容链接": canonicalXhsLink,
     "笔记ID": "6a0c4c5e000000003502a761",
     "账号": "投资号",
-    "内容类型": "图文",
-    "内容类型标签审核": "通过",
-    "tag词": "#同顺图解"
+    "内容类型": "盘点",
+    "是否投放成功": "",
+    "是否为爆款": "",
+    "供稿人": "",
+    "备注": "",
+    "标题": "小红书标题",
+    "tag词": "#同顺盘点",
+    "一级类型": "视频",
+    "二级类型": "资讯",
+    "内容类型标签审核": "通过。因为AI依据标题、tag和可用素材判断为盘点。",
+    "AI内容判断备注": ""
   });
-  assert.deepEqual(mapDailyRecordToSheetRow("xhs", rows[1]), [
-    "1",
-    "05 19",
-    urlCell(canonicalXhsLink),
-    "6a0c4c5e000000003502a761",
-    { type: "multipleValue", values: ["投资号"] },
-    { type: "multipleValue", values: ["图文"] },
-    "通过",
-    "#同顺图解"
-  ]);
+  const sheetRow = mapDailyRecordToSheetRow("xhs", rows[1]);
+  assert.equal(sheetRow[1], "2026-05-19");
+  assert.deepEqual(sheetRow[2], urlCell(canonicalXhsLink));
+  assert.equal(sheetRow[5].values[0], "盘点");
+  assert.equal(sheetRow[11], "#同顺盘点");
+  assert.equal(sheetRow[12], "视频");
+  assert.equal(sheetRow.length, 16);
 });
 
 test("daily records omit the 5.30 separator row when the target date has no material", () => {
@@ -373,52 +407,58 @@ test("Douyin daily records use the submission review column order", () => {
     {
       link: "https://www.douyin.com/video/7641910769218506003",
       accountName: "同花顺投资",
-      contentType: "资讯",
+      contentType: "不应采用",
+      primaryType: "盘点",
+      secondaryType: "资金盘面盘点",
       title: "一文看懂今日市场机会",
       tags: "#同花顺资讯 #同花顺APP",
       publishedAt: "2026-05-19"
     }
   ]);
 
-  assert.deepEqual(mapDailyRecordToFeishuFields("douyin", rows[0]), {
+  assertFieldsInclude(mapDailyRecordToFeishuFields("douyin", rows[0]), {
     "编号": "",
     "投稿时间": "0519 投稿视频",
     "内容链接": "",
-    "标题": "",
-    "tag词": "",
-    "筛选状态": "",
-    "简短理由": "",
     "账号": "",
     "内容类型": "",
+    "是否投放成功": "",
+    "是否为爆款": "",
+    "供稿人": "",
+    "备注": "",
+    "作品ID": "",
+    "作品类型": "",
+    "标题": "",
+    "tag词": "",
+    "一级类型": "",
+    "二级类型": "",
     "内容类型标签审核": "",
-    "本地素材目录": ""
+    "AI内容判断备注": ""
   });
-  assert.deepEqual(mapDailyRecordToFeishuFields("douyin", rows[1]), {
+  assertFieldsInclude(mapDailyRecordToFeishuFields("douyin", rows[1]), {
     "编号": "1",
-    "投稿时间": "05 19",
+    "投稿时间": "2026-05-19",
     "内容链接": "https://www.douyin.com/video/7641910769218506003",
-    "标题": "一文看懂今日市场机会",
-    "tag词": "#同花顺资讯 #同花顺APP",
-    "筛选状态": "",
-    "简短理由": "",
     "账号": "投资号",
     "内容类型": "资讯",
-    "内容类型标签审核": "通过",
-    "本地素材目录": ""
+    "是否投放成功": "",
+    "是否为爆款": "",
+    "供稿人": "",
+    "备注": "",
+    "作品ID": "7641910769218506003",
+    "作品类型": "视频",
+    "标题": "一文看懂今日市场机会",
+    "tag词": "#同花顺资讯 #同花顺APP",
+    "一级类型": "盘点",
+    "二级类型": "资金盘面盘点",
+    "内容类型标签审核": "通过。因为AI依据标题、tag和可用素材判断为资讯。",
+    "AI内容判断备注": ""
   });
-  assert.deepEqual(mapDailyRecordToSheetRow("douyin", rows[1]), [
-    "1",
-    "05 19",
-    urlCell("https://www.douyin.com/video/7641910769218506003"),
-    "一文看懂今日市场机会",
-    "#同花顺资讯 #同花顺APP",
-    "",
-    "",
-    { type: "multipleValue", values: ["投资号"] },
-    { type: "multipleValue", values: ["资讯"] },
-    "通过",
-    ""
-  ]);
+  const douyinSheetRow = mapDailyRecordToSheetRow("douyin", rows[1]);
+  assert.equal(douyinSheetRow[1], "2026-05-19");
+  assert.equal(douyinSheetRow[4].values[0], "资讯");
+  assert.equal(douyinSheetRow[13], "盘点");
+  assert.match(douyinSheetRow[15], /^通过。因为/u);
 });
 
 test("account names are normalized to Feishu dropdown labels", () => {
@@ -436,6 +476,10 @@ test("account names are normalized to Feishu dropdown labels", () => {
   assert.equal(normalizeAccountLabel("xhs", "同花顺理财"), "理财");
   assert.equal(normalizeAccountLabel("xhs", "同顺财经"), "财经号");
   assert.equal(normalizeAccountLabel("xhs", "同花顺研习社"), "研习社");
+  assert.equal(normalizeAccountLabel("xhs", "同花顺新手福利官"), "福利官");
+  assert.equal(normalizeAccountLabel("xhs", "新手福利官"), "福利官");
+  assert.equal(normalizeAccountLabel("xhs", "福利官"), "福利官");
+  assert.equal(XHS_ACCOUNT_DROPDOWN_VALUES.includes("福利官"), true);
   assert.equal(normalizeAccountLabel("bilibili", "同花顺投资"), "投资号");
   assert.equal(normalizeAccountLabel("bilibili", "投资号"), "投资号");
 });
@@ -459,33 +503,44 @@ test("bilibili daily records map BV ids, fixed account names, title, and tags", 
     }
   ]);
 
-  assert.deepEqual(mapDailyRecordToFeishuFields("bilibili", rows[0]), {
+  assertFieldsInclude(mapDailyRecordToFeishuFields("bilibili", rows[0]), {
     "编号": "",
     "投稿时间": "0519 投稿视频",
     "内容链接": "",
     "短链id": "",
+    "是否投放成功": "",
+    "是否为爆款": "",
+    "供稿人": "",
+    "备注": "",
     "账号": "",
+    "作品类型": "",
     "标题": "",
-    "tag词": ""
+    "tag词": "",
+    "内容类型": "",
+    "内容类型标签审核": "",
+    "AI内容判断备注": ""
   });
-  assert.deepEqual(mapDailyRecordToFeishuFields("bilibili", rows[1]), {
+  assertFieldsInclude(mapDailyRecordToFeishuFields("bilibili", rows[1]), {
     "编号": "1",
-    "投稿时间": "05 19",
+    "投稿时间": "2026-05-19",
     "内容链接": "https://www.bilibili.com/video/BV1tNLA6hEQh/",
     "短链id": "BV1tNLA6hEQh",
+    "是否投放成功": "",
+    "是否为爆款": "",
+    "供稿人": "",
+    "备注": "",
     "账号": "投资号",
+    "作品类型": "视频",
     "标题": "B站市场机会复盘",
-    "tag词": "#同花顺资讯 #投资"
+    "tag词": "#同花顺资讯 #投资",
+    "内容类型": "无",
+    "内容类型标签审核": "需审核。因为标题和tag线索不足，无法稳定判断内容类型。",
+    "AI内容判断备注": ""
   });
-  assert.deepEqual(mapDailyRecordToSheetRow("bilibili", rows[1]), [
-    "1",
-    "05 19",
-    urlCell("https://www.bilibili.com/video/BV1tNLA6hEQh/"),
-    "BV1tNLA6hEQh",
-    { type: "multipleValue", values: ["投资号"] },
-    "B站市场机会复盘",
-    "#同花顺资讯 #投资"
-  ]);
+  const bilibiliSheetRow = mapDailyRecordToSheetRow("bilibili", rows[1]);
+  assert.equal(bilibiliSheetRow[1], "2026-05-19");
+  assert.equal(bilibiliSheetRow[12].values[0], "无");
+  assert.match(bilibiliSheetRow[13], /^需审核。因为/u);
 });
 
 test("duplicate separator and material rows are skipped before spreadsheet writes", () => {
@@ -510,7 +565,7 @@ test("duplicate separator and material rows are skipped before spreadsheet write
 
   const filtered = filterNewDailySheetRecords("douyin", rows, [
     ["", "0519 投稿视频", "", "", "", "", ""],
-    ["1", "05 19", "https://v.douyin.com/2X5A3XRH1g4/", "投资号", "股友说", "旧视频", "#同花顺股友说"]
+    ["1", "2026-05-19", "https://v.douyin.com/2X5A3XRH1g4/", "投资号", "股友说", "旧视频", "#同花顺股友说"]
   ]);
 
   assert.equal(filtered.length, 1);
@@ -539,13 +594,49 @@ test("duplicate detection accepts both legacy plain URLs and Feishu URL objects"
   ]);
 
   assert.deepEqual(filterNewDailySheetRecords("xhs", xhsRows, [
-    ["", "0519 投稿视频", "", "", "", "", ""],
-    ["1", "05 19", "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare", "", "投资号", "图文", "#tag"]
+    ["", "0519 投稿视频", "", "", "", "", "", "", ""],
+    ["1", "2026-05-19", "https://www.xiaohongshu.com/discovery/item/6a0c4c5e000000003502a761?source=webshare", "", "", "投资号", "图文", "通过", "#tag"]
   ]), []);
   assert.deepEqual(filterNewDailySheetRecords("douyin", douyinRows, [
     ["", "0519 投稿视频", "", "", "", "", ""],
-    ["1", "05 19", urlCell("https://v.douyin.com/2X5A3XRH1g4/"), "投资号", "资讯", "旧视频", "#tag"]
+    ["1", "2026-05-19", urlCell("https://v.douyin.com/2X5A3XRH1g4/"), "投资号", "资讯", "旧视频", "#tag"]
   ]), []);
+});
+
+test("padded legacy Douyin rows are read with the old title and account columns", () => {
+  const legacyRowPaddedToNewWidth = [
+    "1",
+    "2026-05-19",
+    urlCell("https://www.douyin.com/note/7643770579069209897"),
+    "旧标题",
+    "#同花顺APP",
+    "",
+    "",
+    "投资号",
+    "无",
+    "需审核",
+    "",
+    "",
+    "",
+    ""
+  ];
+
+  assertFieldsInclude(rowToFields("douyin", legacyRowPaddedToNewWidth), {
+    "编号": "1",
+    "投稿时间": "2026-05-19",
+    "内容链接": urlCell("https://www.douyin.com/note/7643770579069209897"),
+    "账号": "投资号",
+    "内容类型": "无",
+    "是否投放成功": "",
+    "是否为爆款": "",
+    "供稿人": "",
+    "备注": "",
+    "作品ID": "",
+    "作品类型": "",
+    "标题": "旧标题",
+    "tag词": "#同花顺APP",
+    "内容类型标签审核": "需审核"
+  });
 });
 
 test("Feishu rows use URL objects and escape formula-like free text", () => {
@@ -560,19 +651,14 @@ test("Feishu rows use URL objects and escape formula-like free text", () => {
     }
   ]);
 
-  assert.deepEqual(mapDailyRecordToSheetRow("douyin", rows[1]), [
-    "1",
-    "05 19",
-    urlCell("https://www.douyin.com/video/7641910769218506003"),
-    "'=危险标题",
-    "'@危险tag",
-    "",
-    "",
-    { type: "multipleValue", values: ["投资号"] },
-    { type: "multipleValue", values: ["资讯"] },
-    "通过",
-    ""
-  ]);
+  const row = mapDailyRecordToSheetRow("douyin", rows[1]);
+  assert.equal(row[1], "2026-05-19");
+  assert.deepEqual(row[2], urlCell("https://www.douyin.com/video/7641910769218506003"));
+  assert.equal(row[4].values[0], "无");
+  assert.equal(row[11], "'=危险标题");
+  assert.equal(row[12], "'@危险tag");
+  assert.equal(row[13], "");
+  assert.match(row[15], /^需审核。因为/u);
 });
 
 test("missing Feishu configuration reports every required placeholder", () => {
@@ -663,17 +749,12 @@ test("single platform JSON output can be written to its Feishu sheet", async () 
   assert.deepEqual(calls[0], ["readRows", "xhs"]);
   assert.equal(calls[1][0], "prependRows");
   assert.equal(calls[1][1], "xhs");
-  assert.deepEqual(calls[1][2][0], ["", "0519 投稿视频", "", "", "", "", "", ""]);
-  assert.deepEqual(calls[1][2][1], [
-    "1",
-    "05 19",
-    urlCell(canonicalXhsLink),
-    "6a0c4c5e000000003502a761",
-    { type: "multipleValue", values: ["投资号"] },
-    { type: "multipleValue", values: ["图文"] },
-    "通过",
-    "#同顺图解"
-  ]);
+  assert.equal(calls[1][2][0][1], "0519 投稿视频");
+  assert.equal(calls[1][2][0].length, PLATFORM_HEADERS.xhs.length);
+  assert.equal(calls[1][2][1][1], "2026-05-19");
+  assert.deepEqual(calls[1][2][1][2], urlCell(canonicalXhsLink));
+  assert.equal(calls[1][2][1][11], "#同顺图解");
+  assert.equal(calls[1][2][1][5].values[0], "图文");
 });
 
 test("single XHS account JSON output with an account suffix can be written to Feishu", async () => {
@@ -714,16 +795,11 @@ test("single XHS account JSON output with an account suffix can be written to Fe
 
   assert.equal(result.collected, 1);
   assert.equal(result.feishu.created, 2);
-  assert.deepEqual(calls[1][2][1], [
-    "1",
-    "05 19",
-    urlCell(canonicalXhsLink),
-    "6b0c4c5e000000003502a762",
-    { type: "multipleValue", values: ["研习社"] },
-    { type: "multipleValue", values: ["图文"] },
-    "通过",
-    "#同顺图解"
-  ]);
+  assert.equal(calls[1][2][1][1], "2026-05-19");
+  assert.deepEqual(calls[1][2][1][2], urlCell(canonicalXhsLink));
+  assert.equal(calls[1][2][1][3], "6b0c4c5e000000003502a762");
+  assert.equal(calls[1][2][1][11], "#同顺图解");
+  assert.equal(calls[1][2][1][5].values[0], "图文");
 });
 
 test("Feishu dropdown setup failures do not block row writes", async () => {
@@ -783,8 +859,8 @@ test("new Feishu date batches are inserted before existing date rows", async () 
     async readRows(platformId) {
       calls.push(["readRows", platformId]);
       return [
-        ["", "0518 投稿视频", "", "", "", "", ""],
-        ["1", "05 18", "old-link", "old-id", "投资号", "图文", ""]
+        ["", "0518 投稿视频", "", "", "", "", "", "", "", "", "", "", ""],
+        ["1", "2026-05-18", "old-link", "old-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", ""]
       ];
     },
     async prependRows(platformId, rows, startRow) {
@@ -814,24 +890,14 @@ test("new Feishu date batches are inserted before existing date rows", async () 
   });
 
   assert.equal(result.created, 2);
-  assert.deepEqual(calls[1], [
-    "prependRows",
-    "xhs",
-    [
-      ["", "0519 投稿视频", "", "", "", "", "", ""],
-      [
-        "1",
-        "05 19",
-        urlCell("new-link"),
-        "new-id",
-        { type: "multipleValue", values: ["投资号"] },
-        { type: "multipleValue", values: ["图文"] },
-        "通过",
-        "#tag"
-      ]
-    ],
-    2
-  ]);
+  assert.equal(calls[1][0], "prependRows");
+  assert.equal(calls[1][1], "xhs");
+  assert.equal(calls[1][3], 2);
+  assert.equal(calls[1][2][0][1], "0519 投稿视频");
+  assert.equal(calls[1][2][1][1], "2026-05-19");
+  assert.deepEqual(calls[1][2][1][2], urlCell("new-link"));
+  assert.equal(calls[1][2][1][11], "#tag");
+  assert.equal(calls[1][2][1][5], "");
 });
 
 test("new Feishu date batches keep newest dates first on every platform", async () => {
@@ -852,12 +918,182 @@ test("new Feishu date batches keep newest dates first on every platform", async 
   }
 });
 
+test("Douyin daily write inserts today's date block under the current year separator and clears material highlights", async () => {
+  const calls = [];
+  const existingRows = [
+    ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "0608 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-06-08", urlCell("old-link"), { type: "multipleValue", values: ["投资号"] }, { type: "multipleValue", values: ["资讯"] }, "", "", "", "", "old-id", "视频", "旧标题", "#old", "通过"],
+    ["", "2025年投稿", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1231 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2025-12-31", urlCell("old-2025-link"), { type: "multipleValue", values: ["投资号"] }, { type: "multipleValue", values: ["资讯"] }, "", "", "", "", "old-2025-id", "视频", "旧标题", "#old", "通过"]
+  ];
+  const client = {
+    dataStartRow(platformId) {
+      assert.equal(platformId, "douyin");
+      return 5;
+    },
+    sheetId(platformId) {
+      assert.equal(platformId, "douyin");
+      return "d0de52";
+    },
+    async sheetColumnCount(platformId) {
+      calls.push(["sheetColumnCount", platformId]);
+      return 17;
+    },
+    async readRows(platformId) {
+      calls.push(["readRows", platformId]);
+      return existingRows;
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+      existingRows.splice(startRow - 5, 0, ...rows);
+      return {
+        updates: {
+          updatedRange: `d0de52!A${startRow}:N${startRow + rows.length - 1}`
+        }
+      };
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    },
+    async clearMaterialRowHighlights(platformId, ranges, options) {
+      calls.push(["clearMaterialRowHighlights", platformId, ranges, options]);
+    },
+    async highlightSeparatorRows(platformId, rows, options) {
+      calls.push(["highlightSeparatorRows", platformId, rows, options]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "douyin",
+    targetDate: "2026-06-10",
+    items: [
+      {
+        link: "https://www.douyin.com/video/7648943779767930131",
+        accountName: "同花顺投资",
+        contentType: "资讯",
+        title: "今天的新素材",
+        tags: "#同花顺资讯",
+        publishedAt: "2026-06-10"
+      }
+    ],
+    client
+  });
+
+  assert.equal(result.created, 2);
+  const douyinPrepend = calls.find((call) => call[0] === "prependRows");
+  assert.equal(douyinPrepend[3], 6);
+  assert.equal(douyinPrepend[2][0][1], "0610 投稿视频");
+  assert.equal(douyinPrepend[2][1][1], "2026-06-10");
+  assert.equal(douyinPrepend[2][1][4].values[0], "资讯");
+  assert.equal(douyinPrepend[2][1][13], "");
+  assert.match(douyinPrepend[2][1][15], /^通过。因为/u);
+  assert.deepEqual(calls.find((call) => call[0] === "clearMaterialRowHighlights"), [
+    "clearMaterialRowHighlights",
+    "douyin",
+    [{ startRow: 7, endRow: 7 }],
+    { columnCount: 17 }
+  ]);
+  assert.deepEqual(calls.find((call) => call[0] === "highlightSeparatorRows"), [
+    "highlightSeparatorRows",
+    "douyin",
+    [5, 6, 8, 10, 11],
+    { columnCount: 17 }
+  ]);
+});
+
+test("Douyin daily write creates a new year separator before adding the first date block of a new year", async () => {
+  const calls = [];
+  const existingRows = [
+    ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1231 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-12-31", urlCell("old-link"), { type: "multipleValue", values: ["投资号"] }, { type: "multipleValue", values: ["资讯"] }, "", "", "", "", "old-id", "视频", "旧标题", "#old", "通过"],
+    ["", "2025年投稿", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1231 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2025-12-31", urlCell("old-2025-link"), { type: "multipleValue", values: ["投资号"] }, { type: "multipleValue", values: ["资讯"] }, "", "", "", "", "old-2025-id", "视频", "旧标题", "#old", "通过"]
+  ];
+  const client = {
+    dataStartRow(platformId) {
+      assert.equal(platformId, "douyin");
+      return 5;
+    },
+    sheetId(platformId) {
+      assert.equal(platformId, "douyin");
+      return "d0de52";
+    },
+    async sheetColumnCount(platformId) {
+      calls.push(["sheetColumnCount", platformId]);
+      return 17;
+    },
+    async readRows(platformId) {
+      calls.push(["readRows", platformId]);
+      return existingRows;
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+      existingRows.splice(startRow - 5, 0, ...rows);
+      return {
+        updates: {
+          updatedRange: `d0de52!A${startRow}:N${startRow + rows.length - 1}`
+        }
+      };
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    },
+    async clearMaterialRowHighlights(platformId, ranges, options) {
+      calls.push(["clearMaterialRowHighlights", platformId, ranges, options]);
+    },
+    async highlightSeparatorRows(platformId, rows, options) {
+      calls.push(["highlightSeparatorRows", platformId, rows, options]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "douyin",
+    targetDate: "2027-01-02",
+    items: [
+      {
+        link: "https://www.douyin.com/video/7777777777777777777",
+        accountName: "同花顺投资",
+        contentType: "资讯",
+        title: "新年第一条素材",
+        tags: "#同花顺资讯",
+        publishedAt: "2027-01-02"
+      }
+    ],
+    client
+  });
+
+  assert.equal(result.created, 3);
+  assert.equal(result.skipped, 0);
+  const newYearPrepend = calls.find((call) => call[0] === "prependRows");
+  assert.equal(newYearPrepend[3], 5);
+  assert.deepEqual(newYearPrepend[2].map((row) => row[1]), ["2027年投稿", "0102 投稿视频", "2027-01-02"]);
+  assert.equal(newYearPrepend[2][2][4].values[0], "资讯");
+  assert.equal(newYearPrepend[2][2][13], "");
+  assert.match(newYearPrepend[2][2][15], /^通过。因为/u);
+  assert.deepEqual(calls.find((call) => call[0] === "clearMaterialRowHighlights"), [
+    "clearMaterialRowHighlights",
+    "douyin",
+    [{ startRow: 7, endRow: 7 }],
+    { columnCount: 17 }
+  ]);
+  assert.deepEqual(calls.find((call) => call[0] === "highlightSeparatorRows"), [
+    "highlightSeparatorRows",
+    "douyin",
+    [5, 6, 8, 9, 11, 12],
+    { columnCount: 17 }
+  ]);
+});
+
 test("new Feishu rows for an existing date append to that block and renumber legacy rows", async () => {
   const calls = [];
   const existingRows = [
-    ["", "0519 投稿视频", "", "", "", "", "", ""],
-    ["2026-05-19-1", "05 19", "old-link", "old-id", "投资号", "图文", "通过", ""],
-    ["", "0518 投稿视频", "", "", "", "", "", ""]
+    ["", "0519 投稿视频", "", "", "", "", "", "", "", "", "", "", ""],
+    ["2026-05-19-1", "2026-05-19", "old-link", "old-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", ""],
+    ["", "0518 投稿视频", "", "", "", "", "", "", "", "", "", "", ""]
   ];
   const client = {
     async readRows(platformId) {
@@ -908,25 +1144,505 @@ test("new Feishu rows for an existing date append to that block and renumber leg
   });
 
   assert.equal(result.created, 1);
-  assert.deepEqual(calls.find((call) => call[0] === "prependRows"), [
-    "prependRows",
+  const appendPrepend = calls.find((call) => call[0] === "prependRows");
+  assert.equal(appendPrepend[3], 4);
+  assert.equal(appendPrepend[2][0][0], "2");
+  assert.equal(appendPrepend[2][0][1], "2026-05-19");
+  assert.deepEqual(appendPrepend[2][0][2], urlCell("new-link"));
+  assert.equal(appendPrepend[2][0][11], "#tag");
+  assert.equal(appendPrepend[2][0][5], "");
+  assert.deepEqual(calls.find((call) => call[0] === "writeRows" && call[2] === "4z96Ou!A3:A4"), ["writeRows", "xhs", "4z96Ou!A3:A4", [["1"], ["2"]]]);
+  assert.deepEqual(calls.find((call) => call[0] === "writeRows" && call[2] === "4z96Ou!L3:L3"), [
+    "writeRows",
     "xhs",
-    [
-      [
-        "2",
-        "05 19",
-        urlCell("new-link"),
-        "new-id",
-        { type: "multipleValue", values: ["投资号"] },
-        { type: "multipleValue", values: ["图文"] },
-        "通过",
-        "#tag"
-      ]
-    ],
-    4
+    "4z96Ou!L3:L3",
+    [["需审核。因为标题和tag线索不足，无法稳定判断内容类型。"]]
   ]);
-  assert.deepEqual(calls.find((call) => call[0] === "writeRows"), ["writeRows", "xhs", "4z96Ou!A3:A4", [["1"], ["2"]]]);
   assert.deepEqual(calls.at(-1), ["highlightSeparatorRows", "xhs", [2, 5]]);
+});
+
+test("XHS daily writes insert today under the current year separator and keep material rows unhighlighted", async () => {
+  const calls = [];
+  const existingRows = [
+    ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "0609 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-06-09", "old-link", "old-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", "", "", "", "", ""],
+    ["", "2025年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1215 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2025-12-15", "older-link", "older-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", "", "", "", "", ""]
+  ];
+  let readCount = 0;
+  const client = {
+    dataStartRow() {
+      return 3;
+    },
+    async sheetColumnCount(platformId) {
+      calls.push(["sheetColumnCount", platformId]);
+      return 17;
+    },
+    async readRows(platformId) {
+      calls.push(["readRows", platformId]);
+      readCount += 1;
+      return readCount === 1 ? existingRows : [
+        ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["", "0610 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["1", "2026-06-10", "new-link", "new-id", "投资号", "图文", "", "", "", "", "新标题", "通过", "#tag", "", "", "", ""],
+        ["", "0609 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["1", "2026-06-09", "old-link", "old-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", "", "", "", "", ""],
+        ["", "2025年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["", "1215 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["1", "2025-12-15", "older-link", "older-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", "", "", "", "", ""]
+      ];
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+      return {
+        updates: {
+          updatedRange: "4z96Ou!A4:M5"
+        }
+      };
+    },
+    sheetId() {
+      return "4z96Ou";
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    },
+    async clearMaterialRowHighlights(platformId, ranges, options) {
+      calls.push(["clearMaterialRowHighlights", platformId, ranges, options]);
+    },
+    async highlightSeparatorRows(platformId, rowNumbers, options) {
+      calls.push(["highlightSeparatorRows", platformId, rowNumbers, options]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "xhs",
+    targetDate: "2026-06-10",
+    items: [{
+      link: "new-link",
+      id: "new-id",
+      accountName: "同花顺投资",
+      contentType: "图文",
+      title: "新标题",
+      tags: "#tag",
+      publishedAt: "2026-06-10"
+    }],
+    client
+  });
+
+  assert.equal(result.created, 2);
+  const prependCall = calls.find((call) => call[0] === "prependRows");
+  assert.equal(prependCall[3], 4);
+  assert.deepEqual(prependCall[2].map((row) => row[1]), ["0610 投稿视频", "2026-06-10"]);
+  assert.deepEqual(calls.find((call) => call[0] === "clearMaterialRowHighlights"), [
+    "clearMaterialRowHighlights",
+    "xhs",
+    [{ startRow: 5, endRow: 5 }],
+    { columnCount: 17 }
+  ]);
+  assert.deepEqual(calls.at(-1), [
+    "highlightSeparatorRows",
+    "xhs",
+    [3, 4, 6, 8, 9],
+    { columnCount: 17 }
+  ]);
+});
+
+test("XHS daily writes create a new year separator before today's separator when crossing years", async () => {
+  const calls = [];
+  const existingRows = [
+    ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1231 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-12-31", "old-link", "old-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", "", "", "", "", ""],
+    ["", "2025年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1215 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2025-12-15", "older-link", "older-id", "投资号", "图文", "", "", "", "", "旧标题", "通过", "", "", "", "", ""]
+  ];
+  let rowsAfterWrite = existingRows;
+  const client = {
+    dataStartRow() {
+      return 3;
+    },
+    async sheetColumnCount(platformId) {
+      calls.push(["sheetColumnCount", platformId]);
+      return 17;
+    },
+    async readRows(platformId) {
+      calls.push(["readRows", platformId]);
+      return rowsAfterWrite;
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+      rowsAfterWrite = [
+        ["", "2027年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["", "0102 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["1", "2027-01-02", "new-link", "new-id", "投资号", "图文", "", "", "", "", "新标题", "通过", "#tag", "", "", "", ""],
+        ...existingRows
+      ];
+      return {
+        updates: {
+          updatedRange: "4z96Ou!A3:M5"
+        }
+      };
+    },
+    sheetId() {
+      return "4z96Ou";
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    },
+    async clearMaterialRowHighlights(platformId, ranges, options) {
+      calls.push(["clearMaterialRowHighlights", platformId, ranges, options]);
+    },
+    async highlightSeparatorRows(platformId, rowNumbers, options) {
+      calls.push(["highlightSeparatorRows", platformId, rowNumbers, options]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "xhs",
+    targetDate: "2027-01-02",
+    items: [{
+      link: "new-link",
+      id: "new-id",
+      accountName: "同花顺投资",
+      contentType: "图文",
+      title: "新标题",
+      tags: "#tag",
+      publishedAt: "2027-01-02"
+    }],
+    client
+  });
+
+  assert.equal(result.created, 3);
+  const prependCall = calls.find((call) => call[0] === "prependRows");
+  assert.equal(prependCall[3], 3);
+  assert.deepEqual(prependCall[2].map((row) => row[1]), ["2027年投稿", "0102 投稿视频", "2027-01-02"]);
+  assert.deepEqual(calls.find((call) => call[0] === "clearMaterialRowHighlights"), [
+    "clearMaterialRowHighlights",
+    "xhs",
+    [{ startRow: 5, endRow: 5 }],
+    { columnCount: 17 }
+  ]);
+  assert.deepEqual(calls.at(-1), [
+    "highlightSeparatorRows",
+    "xhs",
+    [3, 4, 6, 7, 9, 10],
+    { columnCount: 17 }
+  ]);
+});
+
+test("Bilibili daily writes insert today's separator under the current year and keep material rows unhighlighted", async () => {
+  const calls = [];
+  const existingRows = [
+    ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "0609 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-06-09", urlCell("https://www.bilibili.com/video/BVold20260609/"), "BVold20260609", "", "", "", "", "投资号", "视频", "旧标题", "#old", "无", "需审核", "", "", ""],
+    ["", "2025年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1215 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2025-12-15", urlCell("https://www.bilibili.com/video/BVold20251215/"), "BVold20251215", "", "", "", "", "投资号", "视频", "旧标题", "#old", "无", "需审核", "", "", ""]
+  ];
+  const client = {
+    dataStartRow(platformId) {
+      assert.equal(platformId, "bilibili");
+      return 3;
+    },
+    sheetId(platformId) {
+      assert.equal(platformId, "bilibili");
+      return "1FOmKl";
+    },
+    async sheetColumnCount(platformId) {
+      calls.push(["sheetColumnCount", platformId]);
+      return 17;
+    },
+    async readRows(platformId) {
+      calls.push(["readRows", platformId]);
+      return existingRows;
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+      existingRows.splice(startRow - 3, 0, ...rows);
+      return {
+        updates: {
+          updatedRange: `1FOmKl!A${startRow}:N${startRow + rows.length - 1}`
+        }
+      };
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    },
+    async clearMaterialRowHighlights(platformId, ranges, options) {
+      calls.push(["clearMaterialRowHighlights", platformId, ranges, options]);
+    },
+    async highlightSeparatorRows(platformId, rowNumbers, options) {
+      calls.push(["highlightSeparatorRows", platformId, rowNumbers, options]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "bilibili",
+    targetDate: "2026-06-10",
+    items: [{
+      link: "https://www.bilibili.com/video/BVnew20260610/",
+      id: "BVnew20260610",
+      accountName: "同花顺投资",
+      title: "今天的新素材",
+      tags: "#tag",
+      publishedAt: "2026-06-10"
+    }],
+    client
+  });
+
+  assert.equal(result.created, 2);
+  const prependCall = calls.find((call) => call[0] === "prependRows");
+  assert.equal(prependCall[3], 4);
+  assert.equal(prependCall[2][0][1], "0610 投稿视频");
+  assert.equal(prependCall[2][0].length, PLATFORM_HEADERS.bilibili.length);
+  assert.equal(prependCall[2][1][1], "2026-06-10");
+  assert.deepEqual(prependCall[2][1][2], urlCell("https://www.bilibili.com/video/BVnew20260610/"));
+  assert.equal(prependCall[2][1][12].values[0], "无");
+  assert.match(prependCall[2][1][13], /^需审核。因为/u);
+  assert.deepEqual(calls.find((call) => call[0] === "clearMaterialRowHighlights"), [
+    "clearMaterialRowHighlights",
+    "bilibili",
+    [{ startRow: 5, endRow: 5 }],
+    { columnCount: 17 }
+  ]);
+  assert.deepEqual(calls.at(-1), [
+    "highlightSeparatorRows",
+    "bilibili",
+    [3, 4, 6, 8, 9],
+    { columnCount: 17 }
+  ]);
+});
+
+test("Bilibili daily writes create a new year separator before the date separator across years", async () => {
+  const calls = [];
+  const existingRows = [
+    ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1231 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-12-31", urlCell("https://www.bilibili.com/video/BVold20261231/"), "BVold20261231", "", "", "", "", "投资号", "视频", "旧标题", "#old", "无", "需审核", "", "", ""],
+    ["", "2025年投稿", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "1215 投稿视频", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2025-12-15", urlCell("https://www.bilibili.com/video/BVold20251215/"), "BVold20251215", "", "", "", "", "投资号", "视频", "旧标题", "#old", "无", "需审核", "", "", ""]
+  ];
+  const client = {
+    dataStartRow(platformId) {
+      assert.equal(platformId, "bilibili");
+      return 3;
+    },
+    sheetId(platformId) {
+      assert.equal(platformId, "bilibili");
+      return "1FOmKl";
+    },
+    async sheetColumnCount(platformId) {
+      calls.push(["sheetColumnCount", platformId]);
+      return 17;
+    },
+    async readRows(platformId) {
+      calls.push(["readRows", platformId]);
+      return existingRows;
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+      existingRows.splice(startRow - 3, 0, ...rows);
+      return {
+        updates: {
+          updatedRange: `1FOmKl!A${startRow}:N${startRow + rows.length - 1}`
+        }
+      };
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    },
+    async clearMaterialRowHighlights(platformId, ranges, options) {
+      calls.push(["clearMaterialRowHighlights", platformId, ranges, options]);
+    },
+    async highlightSeparatorRows(platformId, rowNumbers, options) {
+      calls.push(["highlightSeparatorRows", platformId, rowNumbers, options]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "bilibili",
+    targetDate: "2027-01-01",
+    items: [{
+      link: "https://www.bilibili.com/video/BVnew20270101/",
+      id: "BVnew20270101",
+      accountName: "同花顺投资",
+      title: "新年第一条素材",
+      tags: "#tag",
+      publishedAt: "2027-01-01"
+    }],
+    client
+  });
+
+  assert.equal(result.created, 3);
+  const prependCall = calls.find((call) => call[0] === "prependRows");
+  assert.equal(prependCall[3], 3);
+  assert.deepEqual(prependCall[2].map((row) => row[1]), ["2027年投稿", "0101 投稿视频", "2027-01-01"]);
+  assert.deepEqual(calls.find((call) => call[0] === "clearMaterialRowHighlights"), [
+    "clearMaterialRowHighlights",
+    "bilibili",
+    [{ startRow: 5, endRow: 5 }],
+    { columnCount: 17 }
+  ]);
+  assert.deepEqual(calls.at(-1), [
+    "highlightSeparatorRows",
+    "bilibili",
+    [3, 4, 6, 7, 9, 10],
+    { columnCount: 17 }
+  ]);
+});
+
+test("daily writes scope duplicate MMDD separator labels to the active year on every platform", async () => {
+  for (const platformId of ["douyin", "xhs", "bilibili"]) {
+    const calls = [];
+    const dataStartRow = platformId === "douyin" ? 5 : 3;
+    const existingRows = [
+      separatorRow(platformId, "2026年投稿"),
+      separatorRow(platformId, "0605 投稿视频"),
+      existingMaterialRow(platformId, "2026-06-05"),
+      separatorRow(platformId, "2025年投稿"),
+      separatorRow(platformId, "0611 投稿视频"),
+      existingMaterialRow(platformId, "2025-06-11")
+    ];
+    const client = {
+      dataStartRow(readPlatformId) {
+        assert.equal(readPlatformId, platformId);
+        return dataStartRow;
+      },
+      sheetId(readPlatformId) {
+        assert.equal(readPlatformId, platformId);
+        return platformId;
+      },
+      async sheetColumnCount(readPlatformId) {
+        assert.equal(readPlatformId, platformId);
+        return PLATFORM_HEADERS[platformId].length;
+      },
+      async readRows(readPlatformId) {
+        assert.equal(readPlatformId, platformId);
+        return existingRows;
+      },
+      async prependRows(writePlatformId, rows, startRow) {
+        calls.push(["prependRows", writePlatformId, rows, startRow]);
+        existingRows.splice(startRow - dataStartRow, 0, ...rows);
+        return {
+          updates: {
+            updatedRange: `${writePlatformId}!A${startRow}:Q${startRow + rows.length - 1}`
+          }
+        };
+      },
+      async writeRows(writePlatformId, range, rows) {
+        calls.push(["writeRows", writePlatformId, range, rows]);
+      },
+      async clearMaterialRowHighlights(writePlatformId, ranges, options) {
+        calls.push(["clearMaterialRowHighlights", writePlatformId, ranges, options]);
+      },
+      async highlightSeparatorRows(writePlatformId, rowNumbers, options) {
+        calls.push(["highlightSeparatorRows", writePlatformId, rowNumbers, options]);
+      }
+    };
+
+    const result = await writeDailyPlatformRecords({
+      platformId,
+      targetDate: "2026-06-11",
+      items: [itemForPlatform(platformId, "2026-06-11")],
+      client
+    });
+
+    assert.equal(result.created, 2, platformId);
+    const prependCall = calls.find((call) => call[0] === "prependRows");
+    assert.equal(prependCall[3], dataStartRow + 1, platformId);
+    assert.deepEqual(prependCall[2].map((row) => row[1]), ["0611 投稿视频", "2026-06-11"], platformId);
+  }
+});
+
+test("Bilibili daily write creates the missing 2026-06-11 block before older 2026 blocks", async () => {
+  const calls = [];
+  const existing20260605 = existingMaterialRow("bilibili", "2026-06-05");
+  existing20260605[1] = "2026-06-05";
+  const existing20250611 = existingMaterialRow("bilibili", "2025-06-11");
+  existing20250611[1] = "2025-06-11";
+  const existingRows = [
+    separatorRow("bilibili", "2026年投稿"),
+    separatorRow("bilibili", "0605 投稿视频"),
+    existing20260605,
+    separatorRow("bilibili", "2025年投稿"),
+    separatorRow("bilibili", "0611 投稿视频"),
+    existing20250611
+  ];
+  const items = [
+    { id: "BV1a6Ev6qEz2", link: "https://www.bilibili.com/video/BV1a6Ev6qEz2/", accountName: "同花顺投资", title: "同花顺股民专属歌曲", tags: "#tag", publishedAt: "2026-06-11" },
+    { id: "BV1X6Ev6qE5a", link: "https://www.bilibili.com/video/BV1X6Ev6qE5a/", accountName: "同花顺投资", title: "盘点科技圈的硬核名词", tags: "#tag", publishedAt: "2026-06-11" },
+    { id: "BV1AdEY6SEAR", link: "https://www.bilibili.com/video/BV1AdEY6SEAR/", accountName: "同花顺投资", title: "同花顺给全体股民送祝福", tags: "#tag", publishedAt: "2026-06-11" },
+    { id: "BV1WREY6JEic", link: "https://www.bilibili.com/video/BV1WREY6JEic/", accountName: "同花顺投资", title: "AI泡沫VS互联网泡沫", tags: "#tag", publishedAt: "2026-06-11" }
+  ];
+  const client = {
+    dataStartRow(platformId) {
+      assert.equal(platformId, "bilibili");
+      return 3;
+    },
+    sheetId(platformId) {
+      assert.equal(platformId, "bilibili");
+      return "1FOmKl";
+    },
+    async sheetColumnCount(platformId) {
+      assert.equal(platformId, "bilibili");
+      return 17;
+    },
+    async readRows(platformId) {
+      assert.equal(platformId, "bilibili");
+      return existingRows;
+    },
+    async prependRows(platformId, rows, startRow) {
+      calls.push(["prependRows", platformId, rows, startRow]);
+      existingRows.splice(startRow - 3, 0, ...rows);
+      return {
+        updates: {
+          updatedRange: `1FOmKl!A${startRow}:Q${startRow + rows.length - 1}`
+        }
+      };
+    },
+    async writeRows(platformId, range, rows) {
+      calls.push(["writeRows", platformId, range, rows]);
+    },
+    async clearMaterialRowHighlights(platformId, ranges, options) {
+      calls.push(["clearMaterialRowHighlights", platformId, ranges, options]);
+    },
+    async highlightSeparatorRows(platformId, rowNumbers, options) {
+      calls.push(["highlightSeparatorRows", platformId, rowNumbers, options]);
+    }
+  };
+
+  const result = await writeDailyPlatformRecords({
+    platformId: "bilibili",
+    targetDate: "2026-06-11",
+    items,
+    client
+  });
+
+  assert.equal(result.created, 5);
+  const prependCall = calls.find((call) => call[0] === "prependRows");
+  assert.equal(prependCall[3], 4);
+  assert.deepEqual(prependCall[2].map((row) => row[1]), [
+    "0611 投稿视频",
+    "2026-06-11",
+    "2026-06-11",
+    "2026-06-11",
+    "2026-06-11"
+  ]);
+  assert.deepEqual(existingRows.slice(0, 8).map((row) => row[1]), [
+    "2026年投稿",
+    "0611 投稿视频",
+    "2026-06-11",
+    "2026-06-11",
+    "2026-06-11",
+    "2026-06-11",
+    "0605 投稿视频",
+    "2026-06-05"
+  ]);
 });
 
 test("Douyin Feishu sync refreshes title and tags on existing duplicate material rows", async () => {
@@ -946,7 +1662,7 @@ test("Douyin Feishu sync refreshes title and tags on existing duplicate material
         ["", "0525 投稿视频", "", "", "", "", "", "", "", "", ""],
         [
           "1",
-          "05 25",
+          "2026-05-25",
           "https://www.douyin.com/note/7643770579069209897",
           "旧标题",
           "#同花顺AP",
@@ -994,6 +1710,15 @@ test("Douyin Feishu sync refreshes title and tags on existing duplicate material
       "douyin",
       "d0de52!D6:E6",
       [["3 万起步，25 岁破亿，游资小鳄鱼的财富曲线", "#同花顺APP"]]
+    ]
+  );
+  assert.deepEqual(
+    calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!J6:J6"),
+    [
+      "writeRows",
+      "douyin",
+      "d0de52!J6:J6",
+      [["需审核。因为AI判断依据不足，建议复核内容类型。"]]
     ]
   );
 });
@@ -1044,23 +1769,38 @@ test("Feishu append uses a range matching the appended row count", async () => {
     }
   });
 
-  await client.appendRows("douyin", [["1", "05 19", "link", "标题", "#tag", "", "", "账号", "资讯", "通过", ""]]);
+  await client.appendRows("douyin", [[
+    "1",
+    "2026-05-19",
+    "link",
+    "账号",
+    "资讯",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "视频",
+    "标题",
+    "#tag",
+    "通过"
+  ]]);
   await client.appendRows("xhs", [
-    ["", "0519 投稿视频", "", "", "", "", "", ""],
-    ["1", "05 19", "link-1", "id-1", "账号", "图文", "通过", "#tag"],
-    ["2", "05 19", "link-2", "id-2", "账号", "图文", "通过", "#tag"],
-    ["3", "05 19", "link-3", "id-3", "账号", "图文", "通过", "#tag"],
-    ["4", "05 19", "link-4", "id-4", "账号", "图文", "通过", "#tag"],
-    ["5", "05 19", "link-5", "id-5", "账号", "图文", "通过", "#tag"]
+    ["", "0519 投稿视频", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-05-19", "link-1", "id-1", "账号", "图文", "", "", "", "", "", "通过", "#tag"],
+    ["2", "2026-05-19", "link-2", "id-2", "账号", "图文", "", "", "", "", "", "通过", "#tag"],
+    ["3", "2026-05-19", "link-3", "id-3", "账号", "图文", "", "", "", "", "", "通过", "#tag"],
+    ["4", "2026-05-19", "link-4", "id-4", "账号", "图文", "", "", "", "", "", "通过", "#tag"],
+    ["5", "2026-05-19", "link-5", "id-5", "账号", "图文", "", "", "", "", "", "通过", "#tag"]
   ]);
   await client.appendRows("bilibili", [
-    ["", "0519 投稿视频", "", "", "", "", ""],
-    ["1", "05 19", "link", "BVxxx", "同花顺投资", "标题", "#tag"]
+    ["", "0519 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-05-19", "link", "BVxxx", "", "", "", "", "同花顺投资", "视频", "标题", "#tag", "无", "需审核"]
   ]);
 
-  assert.equal(requests[0].body.valueRange.range, "d0de52!A1:K1");
-  assert.equal(requests[1].body.valueRange.range, "4z96Ou!A1:H6");
-  assert.equal(requests[2].body.valueRange.range, "1FOmKl!A1:G2");
+  assert.equal(requests[0].body.valueRange.range, "d0de52!A1:Q1");
+  assert.equal(requests[1].body.valueRange.range, "4z96Ou!A1:P6");
+  assert.equal(requests[2].body.valueRange.range, "1FOmKl!A1:O2");
 });
 
 test("Feishu prepend inserts blank rows before writing data rows", async () => {
@@ -1110,11 +1850,11 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
   });
 
   await client.prependRows("xhs", [
-    ["", "0519 投稿视频", "", "", "", "", "", ""],
-    ["1", "05 19", "link-1", "id-1", "账号", "图文", "通过", "#tag"]
+    ["", "0519 投稿视频", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-05-19", "link-1", "id-1", "账号", "图文", "", "", "", "", "", "通过", "#tag"]
   ], 2);
   await client.prependRows("bilibili", [
-    ["2", "05 19", "link", "BVxxx", "投资号", "标题", "#tag"]
+    ["2", "2026-05-19", "link", "BVxxx", "", "", "", "", "投资号", "视频", "标题", "#tag", "无", "需审核"]
   ], 5);
 
   const writeRequests = requests.filter((request) => request.method !== "GET");
@@ -1130,7 +1870,7 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
     inheritStyle: "BEFORE"
   });
   assert.match(writeRequests[1].url, /\/values$/);
-  assert.equal(writeRequests[1].body.valueRange.range, "4z96Ou!A2:H3");
+  assert.equal(writeRequests[1].body.valueRange.range, "4z96Ou!A2:P3");
   assert.match(writeRequests[2].url, /\/insert_dimension_range$/);
   assert.deepEqual(writeRequests[2].body.dimension, {
     sheetId: "1FOmKl",
@@ -1139,7 +1879,63 @@ test("Feishu prepend inserts blank rows before writing data rows", async () => {
     endIndex: 5
   });
   assert.match(writeRequests[3].url, /\/values$/);
-  assert.equal(writeRequests[3].body.valueRange.range, "1FOmKl!A5:G5");
+  assert.equal(writeRequests[3].body.valueRange.range, "1FOmKl!A5:O5");
+});
+
+test("Feishu replaceSheetDataRows chunks large rewrites to avoid RangeVal failures", async () => {
+  const requests = [];
+  const client = new FeishuSheetsClient({
+    appId: "cli_xxx",
+    appSecret: "secret",
+    spreadsheetToken: "sht_xxx",
+    wikiToken: "",
+    apiBaseUrl: "https://open.feishu.cn",
+    sheets: {
+      bilibili: "1FOmKl"
+    }
+  }, {
+    tenantAccessToken: "tenant_token",
+    async fetch(url, options = {}) {
+      requests.push({
+        url,
+        method: options.method || "GET",
+        body: options.body ? JSON.parse(options.body) : null
+      });
+      if (url.includes("/sheets/query")) {
+        return {
+          ok: true,
+          async text() {
+            return JSON.stringify({
+              code: 0,
+              data: {
+                sheets: [
+                  { sheet_id: "1FOmKl", grid_properties: { row_count: 5170 } }
+                ]
+              }
+            });
+          }
+        };
+      }
+      return {
+        ok: true,
+        async text() {
+          return JSON.stringify({ code: 0, data: {} });
+        }
+      };
+    }
+  });
+
+  await client.replaceSheetDataRows("bilibili", [
+    ["", "2026年投稿", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["", "0605 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["1", "2026-06-05", urlCell("https://www.bilibili.com/video/BVchunk/"), "BVchunk", "", "", "", "", "投资号", "视频", "标题", "#tag", "无", "需审核"]
+  ], 14);
+
+  const valueWrites = requests.filter((request) => request.url.endsWith("/values"));
+  assert.equal(valueWrites.some((request) => request.body.valueRange.range === "1FOmKl!A3:O5170"), false);
+  assert.equal(valueWrites[0].body.valueRange.range, "1FOmKl!A3:N1002");
+  assert.equal(valueWrites.at(-1).body.valueRange.range, "1FOmKl!A5003:N5170");
+  assert.equal(valueWrites.reduce((total, request) => total + request.body.valueRange.values.length, 0), 5168);
 });
 
 test("Feishu readRows reads the actual sheet rows in chunks past row 5000", async () => {
@@ -1177,35 +1973,41 @@ test("Feishu readRows reads the actual sheet rows in chunks past row 5000", asyn
       if (url.includes("/values/")) {
         const range = decodeURIComponent(url.split("/values/")[1]);
         ranges.push(range);
-        const values = range === "d0de52!A1:K5000"
+        const values = range === "d0de52!A1:Q5000"
           ? [
               PLATFORM_DOUYIN_HEADER,
               ...Array.from({ length: 4999 }, (_, index) => [
                 String(index + 1),
-                "05 19",
+                "2026-05-19",
                 `link-${index + 1}`,
-                "标题",
-                "#tag",
-                "",
-                "",
                 "投资号",
                 "资讯",
-                "通过",
-                ""
+                "",
+                "",
+                "",
+                "",
+                "",
+                "视频",
+                "标题",
+                "#tag",
+                "通过"
               ])
             ]
           : Array.from({ length: 1002 }, (_, index) => [
               String(5000 + index),
-              "05 19",
+              "2026-05-19",
               `link-${5000 + index}`,
-              "标题",
-              "#tag",
-              "",
-              "",
               "投资号",
               "资讯",
-              "通过",
-              ""
+              "",
+              "",
+              "",
+              "",
+              "",
+              "视频",
+              "标题",
+              "#tag",
+              "通过"
             ]);
         return {
           ok: true,
@@ -1221,7 +2023,7 @@ test("Feishu readRows reads the actual sheet rows in chunks past row 5000", asyn
 
   const rows = await client.readRows("douyin");
 
-  assert.deepEqual(ranges, ["d0de52!A1:K5000", "d0de52!A5001:K6002"]);
+  assert.deepEqual(ranges, ["d0de52!A1:Q5000", "d0de52!A5001:Q6002"]);
   assert.equal(rows.length, 6001);
   assert.equal(rows.at(-1)[2], "link-6001");
 });
@@ -1270,8 +2072,23 @@ test("Feishu readRows detects template header rows and preserves real data row n
                   ["投稿规则", "1、明显不符合广告平台规则的内容不投"],
                   ["", "2、投稿账号连着2周过审率低于30%，停投2周(每周五观测一次)"],
                   PLATFORM_DOUYIN_HEADER,
-                  ["", "0521 投稿视频", "", "", "", "", "", "", "", "", ""],
-                  ["1", "05 21", urlCell("https://www.douyin.com/video/1"), "标题", "#tag", "", "", "投资号", "资讯", "通过", ""]
+                  ["", "0521 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""],
+                  [
+                    "1",
+                    "2026-05-21",
+                    urlCell("https://www.douyin.com/video/1"),
+                    "投资号",
+                    "资讯",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "1",
+                    "视频",
+                    "标题",
+                    "#tag",
+                    "通过"
+                  ]
                 ]
               }
             }
@@ -1287,7 +2104,7 @@ test("Feishu readRows detects template header rows and preserves real data row n
   assert.deepEqual(rows[0].slice(0, 2), ["", "0521 投稿视频"]);
   assert.equal(client.headerRow("douyin"), 4);
   assert.equal(client.dataStartRow("douyin"), 5);
-  assert.match(decodeURIComponent(requests.find((request) => request.url.includes("/values/")).url), /A1:K8/);
+  assert.match(decodeURIComponent(requests.find((request) => request.url.includes("/values/")).url), /A1:Q8/);
 });
 
 test("writeDailyPlatformRecords inserts template-backed platform rows at the real sheet row", async () => {
@@ -1302,12 +2119,12 @@ test("writeDailyPlatformRecords inserts template-backed platform rows at the rea
       readCount += 1;
       return readCount === 1 ? [
         ["", "0520 投稿视频", "", "", "", "", "", "", "", "", ""],
-        ["1", "05 20", urlCell("old-link"), "旧标题", "#old", "", "", "投资号", "资讯", "通过", ""]
+        ["1", "2026-05-20", urlCell("old-link"), "旧标题", "#old", "", "", "投资号", "资讯", "通过", ""]
       ] : [
         ["", "0521 投稿视频", "", "", "", "", "", "", "", "", ""],
-        ["1", "05 21", urlCell("new-link"), "新标题", "#new", "", "", "投资号", "资讯", "通过", ""],
+        ["1", "2026-05-21", urlCell("new-link"), "新标题", "#new", "", "", "投资号", "资讯", "通过", ""],
         ["", "0520 投稿视频", "", "", "", "", "", "", "", "", ""],
-        ["1", "05 20", urlCell("old-link"), "旧标题", "#old", "", "", "投资号", "资讯", "通过", ""]
+        ["1", "2026-05-20", urlCell("old-link"), "旧标题", "#old", "", "", "投资号", "资讯", "通过", ""]
       ];
     },
     async prependRows(platformId, rows, startRow) {
@@ -1354,7 +2171,7 @@ test("applyFeishuSubmissionTemplate is idempotent and reuses the Step 1.5 sheet 
     ],
     xhs: [
       PLATFORM_XHS_HEADER,
-      ["", "0521 投稿视频", "", "", "", "", "", ""]
+      ["", "0521 投稿视频", "", "", "", "", "", "", ""]
     ],
     bilibili: [
       PLATFORM_BILIBILI_HEADER,
@@ -1421,14 +2238,14 @@ test("applyFeishuSubmissionTemplate is idempotent and reuses the Step 1.5 sheet 
       ["step15", 1, 3]
     ]
   );
-  assert.ok(calls.some((call) => call[0] === "writeRows" && call[2] === "d0de52!A4:K4"));
+  assert.ok(calls.some((call) => call[0] === "writeRows" && call[2] === "d0de52!A4:Q4"));
   assert.ok(calls.some((call) => call[0] === "writeRows" && call[2] === "VIw5q!A4:J4"));
   const step15HeaderWrite = calls.find((call) => call[0] === "writeRows" && call[2] === "VIw5q!A4:J4");
   assert.deepEqual(step15HeaderWrite[3][0], step15ExpectedHeader);
-  const douyinHeaderWrite = calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!A4:K4");
+  const douyinHeaderWrite = calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!A4:Q4");
   assert.deepEqual(douyinHeaderWrite[3][0], PLATFORM_DOUYIN_HEADER);
   assert.ok(calls.some((call) => call[0] === "renameSheet" && call[1] === "step15" && call[2] === "抖音筛选结果"));
-  const douyinTopWrite = calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!A1:K3");
+  const douyinTopWrite = calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!A1:Q3");
   assert.equal(douyinTopWrite[3][1][8], "期货通");
   assert.match(douyinTopWrite[3][0][9], /内容类型公式/);
 
@@ -1457,7 +2274,7 @@ test("applyFeishuSubmissionTemplate remaps legacy Douyin data rows by header nam
       ["投稿规则"],
       [""],
       legacyDouyinHeader,
-      ["1", "05 18", urlCell("https://www.douyin.com/video/1"), "投资号", "资讯", "通过", "旧标题", "#old", "通过", "R1", "旧理由", "/tmp/asset"]
+      ["1", "2026-05-18", urlCell("https://www.douyin.com/video/1"), "投资号", "资讯", "通过", "旧标题", "#old", "通过", "R1", "旧理由", "/tmp/asset"]
     ],
     xhs: [["2026目标  5个爆款/月"], PLATFORM_XHS_HEADER],
     bilibili: [["2026目标  2个爆款/月"], PLATFORM_BILIBILI_HEADER],
@@ -1499,20 +2316,25 @@ test("applyFeishuSubmissionTemplate remaps legacy Douyin data rows by header nam
 
   await applyFeishuSubmissionTemplate({ client });
 
-  const migrateCall = calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!A5:L5");
-  assert.ok(migrateCall, "expected legacy Douyin data rewrite that also clears old L column");
+  const migrateCall = calls.find((call) => call[0] === "writeRows" && call[2] === "d0de52!A5:Q5");
+  assert.ok(migrateCall, "expected legacy Douyin data rewrite into the new 14-column channel schema");
   assert.deepEqual(migrateCall[3][0], [
     "1",
-    "05 18",
+    "2026-05-18",
     urlCell("https://www.douyin.com/video/1"),
-    "旧标题",
-    "#old",
-    "通过",
-    "旧理由",
     "投资号",
     "资讯",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "旧标题",
+    "#old",
+    "",
+    "",
     "通过",
-    "/tmp/asset",
     ""
   ]);
 });
@@ -1526,7 +2348,7 @@ test("applyFeishuSubmissionTemplate remaps legacy Bilibili data rows by header n
     bilibili: [
       ["2026目标  2个爆款/月"],
       legacyBilibiliHeader,
-      ["1", "05 18", urlCell("https://www.bilibili.com/video/BVlegacy/"), "BVlegacy", "投资号"]
+      ["1", "2026-05-18", urlCell("https://www.bilibili.com/video/BVlegacy/"), "BVlegacy", "投资号"]
     ],
     step15: [["2026目标  10个爆款/月"], ["投稿规则"], [""], STEP15_FILTERED_HEADER]
   };
@@ -1564,14 +2386,22 @@ test("applyFeishuSubmissionTemplate remaps legacy Bilibili data rows by header n
 
   await applyFeishuSubmissionTemplate({ client });
 
-  const migrateCall = calls.find((call) => call[0] === "writeRows" && call[2] === "1FOmKl!A3:G3");
-  assert.ok(migrateCall, "expected legacy Bilibili data rewrite that adds blank title and tag columns");
+  const migrateCall = calls.find((call) => call[0] === "writeRows" && call[2] === "1FOmKl!A3:O3");
+  assert.ok(migrateCall, "expected legacy Bilibili data rewrite into the new 14-column channel schema");
   assert.deepEqual(migrateCall[3][0], [
     "1",
-    "05 18",
+    "2026-05-18",
     urlCell("https://www.bilibili.com/video/BVlegacy/"),
     "BVlegacy",
+    "",
+    "",
+    "",
+    "",
     "投资号",
+    "",
+    "",
+    "",
+    "",
     "",
     ""
   ]);
@@ -1580,18 +2410,21 @@ test("applyFeishuSubmissionTemplate remaps legacy Bilibili data rows by header n
 test("Feishu duplicate filtering sees material rows beyond row 5000", async () => {
   const rows = Array.from({ length: 6001 }, (_, index) => [
     String(index + 1),
-    "05 19",
+    "2026-05-19",
     `https://v.douyin.com/${index + 1}/`,
-    "标题",
-    "#tag",
-    "",
-    "",
     "投资号",
     "资讯",
-    "通过",
-    ""
+    "",
+    "",
+    "",
+    "",
+    "",
+    "视频",
+    "标题",
+    "#tag",
+    "通过"
   ]);
-  rows[0] = ["", "0519 投稿视频", "", "", "", "", "", "", "", "", ""];
+  rows[0] = ["", "0519 投稿视频", "", "", "", "", "", "", "", "", "", "", "", ""];
   rows[6000][2] = urlCell("https://v.douyin.com/existing-after-5000/");
   const records = buildDailySheetRecords("douyin", "2026-05-19", [
     {
@@ -1685,7 +2518,7 @@ test("Feishu dropdown setup configures account and content type columns", async 
   await client.configurePlatformDropdowns("xhs");
 
   const dropdownRequests = requests.filter((request) => request.url.endsWith("/dataValidation"));
-  assert.equal(dropdownRequests.length, 2);
+  assert.equal(dropdownRequests.length, 4);
   assert.equal(dropdownRequests[0].method, "POST");
   assert.equal(dropdownRequests[0].body.range, "4z96Ou!E3:E200");
   assert.equal(dropdownRequests[0].body.dataValidationType, "list");
@@ -1700,6 +2533,10 @@ test("Feishu dropdown setup configures account and content type columns", async 
     dropdownRequests[1].body.dataValidation.options.colors.length,
     EXPECTED_XHS_CONTENT_TYPES.length
   );
+  assert.equal(dropdownRequests[2].body.range, "4z96Ou!G3:G200");
+  assert.deepEqual(dropdownRequests[2].body.dataValidation.conditionValues, ["是", "否"]);
+  assert.equal(dropdownRequests[3].body.range, "4z96Ou!H3:H200");
+  assert.deepEqual(dropdownRequests[3].body.dataValidation.conditionValues, ["是", "否"]);
 });
 
 test("Feishu dropdown setup caps ranges to avoid RangeVal failures on large sheets", async () => {
@@ -1752,6 +2589,8 @@ test("Feishu dropdown setup caps ranges to avoid RangeVal failures on large shee
   const dropdownRequests = requests.filter((request) => request.url.endsWith("/dataValidation"));
   assert.equal(dropdownRequests[0].body.range, "4z96Ou!E3:E5000");
   assert.equal(dropdownRequests[1].body.range, "4z96Ou!F3:F5000");
+  assert.equal(dropdownRequests[2].body.range, "4z96Ou!G3:G5000");
+  assert.equal(dropdownRequests[3].body.range, "4z96Ou!H3:H5000");
 });
 
 test("Douyin account dropdown options stay separate from XHS and Bilibili", async () => {
@@ -1804,11 +2643,9 @@ test("Douyin account dropdown options stay separate from XHS and Bilibili", asyn
   await client.configurePlatformDropdowns("bilibili");
 
   const dropdownRequests = requests.filter((request) => request.url.endsWith("/dataValidation"));
-  assert.equal(dropdownRequests[0].body.range, "d0de52!F5:F200");
-  assert.deepEqual(dropdownRequests[0].body.dataValidation.conditionValues, ["通过", "不投放", "需人工复核"]);
-  assert.equal(dropdownRequests[1].body.range, "d0de52!H5:H200");
-  assert.deepEqual(dropdownRequests[1].body.dataValidation.conditionValues, DOUYIN_ACCOUNT_DROPDOWN_VALUES);
-  assert.deepEqual(dropdownRequests[1].body.dataValidation.conditionValues, [
+  assert.equal(dropdownRequests[0].body.range, "d0de52!D5:D200");
+  assert.deepEqual(dropdownRequests[0].body.dataValidation.conditionValues, DOUYIN_ACCOUNT_DROPDOWN_VALUES);
+  assert.deepEqual(dropdownRequests[0].body.dataValidation.conditionValues, [
     "投资号",
     "问财",
     "财经号",
@@ -1818,14 +2655,30 @@ test("Douyin account dropdown options stay separate from XHS and Bilibili", asyn
     "达人内容",
     "福利官"
   ]);
-  assert.equal(dropdownRequests[1].body.dataValidation.conditionValues.includes("喵懂投资"), false);
-  assert.equal(dropdownRequests[2].body.range, "d0de52!I5:I200");
-  assert.deepEqual(dropdownRequests[2].body.dataValidation.conditionValues, EXPECTED_DOUYIN_CONTENT_TYPES);
+  assert.equal(dropdownRequests[0].body.dataValidation.conditionValues.includes("喵懂投资"), false);
+  assert.equal(dropdownRequests[1].body.range, "d0de52!E5:E200");
+  assert.deepEqual(dropdownRequests[1].body.dataValidation.conditionValues, EXPECTED_DOUYIN_CONTENT_TYPES);
   assert.equal(
-    dropdownRequests[2].body.dataValidation.options.colors.length,
+    dropdownRequests[1].body.dataValidation.options.colors.length,
     EXPECTED_DOUYIN_CONTENT_TYPES.length
   );
-  assert.deepEqual(dropdownRequests.at(-1).body.dataValidation.conditionValues, ["投资号"]);
+  assert.equal(dropdownRequests[2].body.range, "d0de52!F5:F200");
+  assert.deepEqual(dropdownRequests[2].body.dataValidation.conditionValues, ["是", "否"]);
+  assert.equal(dropdownRequests[3].body.range, "d0de52!G5:G200");
+  assert.deepEqual(dropdownRequests[3].body.dataValidation.conditionValues, ["是", "否"]);
+  assert.equal(dropdownRequests[4].body.range, "1FOmKl!E3:E200");
+  assert.deepEqual(dropdownRequests[4].body.dataValidation.conditionValues, ["是", "否"]);
+  assert.equal(dropdownRequests[5].body.range, "1FOmKl!F3:F200");
+  assert.deepEqual(dropdownRequests[5].body.dataValidation.conditionValues, ["是", "否"]);
+  assert.equal(dropdownRequests[6].body.range, "1FOmKl!I3:I200");
+  assert.deepEqual(dropdownRequests[6].body.dataValidation.conditionValues, ["投资号"]);
+  assert.equal(dropdownRequests[7].body.range, "1FOmKl!M3:M200");
+  assert.deepEqual(BILIBILI_CONTENT_TYPE_DROPDOWN_VALUES, EXPECTED_BILIBILI_CONTENT_TYPES);
+  assert.deepEqual(dropdownRequests[7].body.dataValidation.conditionValues, EXPECTED_BILIBILI_CONTENT_TYPES);
+  assert.equal(
+    dropdownRequests[7].body.dataValidation.options.colors.length,
+    EXPECTED_BILIBILI_CONTENT_TYPES.length
+  );
 });
 
 test("Step 1.5 filtered result dropdowns cover account, content type, and manual yes/no columns", async () => {
@@ -1957,16 +2810,102 @@ test("Feishu write highlights daily separator rows with the configured color", a
     client
   });
 
-  const styleRequest = requests.find((request) => request.url.endsWith("/style"));
+  const styleRequest = requests.find((request) => request.url.endsWith("/styles_batch_update"));
   assert.equal(styleRequest.method, "PUT");
   assert.deepEqual(styleRequest.body, {
-    appendStyle: {
-      range: "4z96Ou!A2:H2",
-      style: {
-        backColor: "#FEF258"
+    data: [
+      {
+        ranges: ["4z96Ou!A2:P2"],
+        style: {
+          backColor: "#FEF258"
+        }
       }
+    ]
+  });
+});
+
+test("Feishu separator highlighting batches and coalesces row ranges", async () => {
+  const requests = [];
+  const client = new FeishuSheetsClient({
+    appId: "cli_xxx",
+    appSecret: "secret",
+    spreadsheetToken: "sht_xxx",
+    wikiToken: "",
+    apiBaseUrl: "https://open.feishu.cn",
+    sheets: {
+      douyin: "d0de52",
+      xhs: "4z96Ou",
+      bilibili: "1FOmKl"
+    }
+  }, {
+    tenantAccessToken: "tenant_token",
+    async fetch(url, options = {}) {
+      requests.push({
+        url,
+        method: options.method || "GET",
+        body: options.body ? JSON.parse(options.body) : null
+      });
+      return {
+        ok: true,
+        async text() {
+          return JSON.stringify({ code: 0, data: {} });
+        }
+      };
     }
   });
+
+  await client.highlightSeparatorRows("bilibili", [3, 4, 10, 10, 12, 13, 14]);
+
+  const batchRequest = requests.find((request) => request.url.endsWith("/styles_batch_update"));
+  assert.equal(batchRequest.method, "PUT");
+  assert.deepEqual(batchRequest.body, {
+    data: [
+      {
+        ranges: ["1FOmKl!A3:O4", "1FOmKl!A10:O10", "1FOmKl!A12:O14"],
+        style: {
+          backColor: "#FEF258"
+        }
+      }
+    ]
+  });
+  assert.equal(requests.some((request) => request.url.endsWith("/style")), false);
+});
+
+test("Feishu row highlight helpers can cover visible extension columns", async () => {
+  const requests = [];
+  const client = new FeishuSheetsClient({
+    appId: "cli_xxx",
+    appSecret: "secret",
+    spreadsheetToken: "sht_xxx",
+    wikiToken: "",
+    apiBaseUrl: "https://open.feishu.cn",
+    sheets: {
+      douyin: "d0de52"
+    }
+  }, {
+    tenantAccessToken: "tenant_token",
+    async fetch(url, options = {}) {
+      requests.push({
+        url,
+        method: options.method || "GET",
+        body: options.body ? JSON.parse(options.body) : null
+      });
+      return {
+        ok: true,
+        async text() {
+          return JSON.stringify({ code: 0, data: {} });
+        }
+      };
+    }
+  });
+
+  await client.highlightSeparatorRows("douyin", [5], { columnCount: 17 });
+  await client.clearMaterialRowHighlights("douyin", [{ startRow: 6, endRow: 7 }], { columnCount: 17 });
+
+  const separatorRequest = requests.find((request) => request.url.endsWith("/styles_batch_update"));
+  assert.deepEqual(separatorRequest.body.data[0].ranges, ["d0de52!A5:Q5"]);
+  const materialRequest = requests.find((request) => request.url.endsWith("/style"));
+  assert.equal(materialRequest.body.appendStyle.range, "d0de52!A6:Q7");
 });
 
 test("Bilibili Feishu writes keep material rows unhighlighted when inserting above highlighted separators", async () => {
@@ -1998,14 +2937,14 @@ test("Bilibili Feishu writes keep material rows unhighlighted when inserting abo
           ? [
               PLATFORM_BILIBILI_HEADER,
               ["", "0519 投稿视频", "", "", "", "", ""],
-              ["1", "05 19", "old-link", "BVold", "投资号", "旧标题", "#old"]
+              ["1", "2026-05-19", "old-link", "BVold", "投资号", "旧标题", "#old"]
             ]
           : [
               PLATFORM_BILIBILI_HEADER,
               ["", "0520 投稿视频", "", "", "", "", ""],
-              ["1", "05 20", "new-link", "BVnew", "投资号", "新标题", "#new"],
+              ["1", "2026-05-20", "new-link", "BVnew", "投资号", "新标题", "#new"],
               ["", "0519 投稿视频", "", "", "", "", ""],
-              ["1", "05 19", "old-link", "BVold", "投资号", "旧标题", "#old"]
+              ["1", "2026-05-19", "old-link", "BVold", "投资号", "旧标题", "#old"]
             ];
         return {
           ok: true,
@@ -2062,24 +3001,23 @@ test("Bilibili Feishu writes keep material rows unhighlighted when inserting abo
   const styleRequests = requests.filter((request) => request.url.endsWith("/style"));
   assert.deepEqual(styleRequests.map((request) => request.body.appendStyle), [
     {
-      range: "1FOmKl!A3:G3",
+      range: "1FOmKl!A3:O3",
       style: {
         backColor: "#FFFFFF"
       }
-    },
-    {
-      range: "1FOmKl!A2:G2",
-      style: {
-        backColor: "#FEF258"
-      }
-    },
-    {
-      range: "1FOmKl!A4:G4",
-      style: {
-        backColor: "#FEF258"
-      }
     }
   ]);
+  const separatorStyleRequest = requests.find((request) => request.url.endsWith("/styles_batch_update"));
+  assert.deepEqual(separatorStyleRequest.body, {
+    data: [
+      {
+        ranges: ["1FOmKl!A2:O2", "1FOmKl!A4:O4"],
+        style: {
+          backColor: "#FEF258"
+        }
+      }
+    ]
+  });
 });
 
 test("login probe classifies valid, invalid, blocked, and unknown states", () => {

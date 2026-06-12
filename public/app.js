@@ -22,12 +22,20 @@ const PLATFORMS = {
     title: "全渠道每日采集",
     loginText: "无需登录",
     accountHint: ""
+  },
+  settings: {
+    eyebrow: "System Settings",
+    title: "系统设置与检测",
+    loginText: "",
+    accountHint: ""
   }
 };
 
 const sinceInput = document.querySelector("#since");
 const untilInput = document.querySelector("#until");
 const untilField = document.querySelector("#until-field");
+const crawlerToolbarEl = document.querySelector("#crawler-toolbar");
+const workspaceEl = document.querySelector("#workspace");
 const crawlModeSelect = document.querySelector("#crawl-mode");
 const targetDateInput = document.querySelector("#target-date");
 const schedulebarEl = document.querySelector("#schedulebar");
@@ -36,7 +44,6 @@ const loginButton = document.querySelector("#login");
 const loginCheckButton = document.querySelector("#login-check");
 const loginCheckStatusEl = document.querySelector("#login-check-status");
 const runButton = document.querySelector("#run");
-const feishuWriteButton = document.querySelector("#feishu-write");
 const stopButton = document.querySelector("#stop");
 const dailyRunButton = document.querySelector("#daily-run");
 const clearButton = document.querySelector("#clear");
@@ -57,6 +64,34 @@ const accountUrlInput = document.querySelector("#account-url");
 const saveAccountButton = document.querySelector("#save-account");
 const accountListEl = document.querySelector("#account-list");
 const accountStatusEl = document.querySelector("#account-status");
+const settingsPageEl = document.querySelector("#settings-page");
+const runConfigChecksButton = document.querySelector("#run-config-checks");
+const saveSettingsButton = document.querySelector("#save-settings");
+const cleanupCacheButton = document.querySelector("#cleanup-cache");
+const settingsStatusEl = document.querySelector("#settings-status");
+const settingsCheckListEl = document.querySelector("#settings-check-list");
+const settingInputs = {
+  feishuAppId: document.querySelector("#setting-feishu-app-id"),
+  feishuAppSecret: document.querySelector("#setting-feishu-app-secret"),
+  feishuAppSecretSummary: document.querySelector("#setting-feishu-app-secret-summary"),
+  feishuSpreadsheetToken: document.querySelector("#setting-feishu-spreadsheet-token"),
+  feishuWikiToken: document.querySelector("#setting-feishu-wiki-token"),
+  feishuSheetDouyin: document.querySelector("#setting-feishu-sheet-douyin"),
+  feishuSheetXhs: document.querySelector("#setting-feishu-sheet-xhs"),
+  feishuSheetBilibili: document.querySelector("#setting-feishu-sheet-bilibili"),
+  minimaxApiKey: document.querySelector("#setting-minimax-api-key"),
+  minimaxApiKeySummary: document.querySelector("#setting-minimax-api-key-summary"),
+  minimaxBaseUrl: document.querySelector("#setting-minimax-base-url"),
+  minimaxModel: document.querySelector("#setting-minimax-model"),
+  deepseekApiKey: document.querySelector("#setting-deepseek-api-key"),
+  deepseekApiKeySummary: document.querySelector("#setting-deepseek-api-key-summary"),
+  deepseekConfigStatus: document.querySelector("#setting-deepseek-config-status"),
+  deepseekBaseUrl: document.querySelector("#setting-deepseek-base-url"),
+  deepseekModel: document.querySelector("#setting-deepseek-model")
+};
+const cachePathEl = document.querySelector("#cache-path");
+const cacheSizeEl = document.querySelector("#cache-size");
+const openCacheDirButton = document.querySelector("#open-cache-dir");
 
 let currentPlatform = "xhs";
 let logs = [];
@@ -78,6 +113,10 @@ platformButtons.forEach((button) => {
   button.addEventListener("click", async () => {
     currentPlatform = button.dataset.platform;
     renderPlatform();
+    if (currentPlatform === "settings") {
+      await loadSettings();
+      return;
+    }
     await loadStatus();
     await loadOutputs();
     await loadAccounts(currentPlatform);
@@ -106,25 +145,6 @@ runButton.addEventListener("click", async () => {
     since,
     until,
     mode: crawlModeSelect.value
-  });
-  if (result?.error) appendLocalLog(result.error);
-});
-
-feishuWriteButton.addEventListener("click", async () => {
-  if (currentPlatform === "daily") return;
-
-  const since = sinceInput.value.trim();
-  const until = untilInput.value.trim() || since;
-  if (!since) {
-    appendLocalLog("请选择要写入飞书的开始日期。");
-    sinceInput.focus();
-    return;
-  }
-
-  const result = await postJson("/api/feishu/write", {
-    platform: currentPlatform,
-    since,
-    until
   });
   if (result?.error) appendLocalLog(result.error);
 });
@@ -168,6 +188,22 @@ saveAccountButton.addEventListener("click", async () => {
   await saveAccount();
 });
 
+runConfigChecksButton.addEventListener("click", async () => {
+  await runConfigChecks();
+});
+
+saveSettingsButton.addEventListener("click", async () => {
+  await saveSettings();
+});
+
+cleanupCacheButton.addEventListener("click", async () => {
+  await cleanupCache();
+});
+
+openCacheDirButton.addEventListener("click", async () => {
+  await openCacheDir();
+});
+
 accountNameInput.addEventListener("keydown", async (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
@@ -202,6 +238,7 @@ async function initializePanel() {
   await loadOutputs();
   await loadScheduler();
   await loadAccounts(currentPlatform);
+  await loadSettings();
   void autoCheckLogin(currentPlatform);
 }
 
@@ -268,12 +305,16 @@ async function loadStatus() {
 }
 
 async function loadOutputs() {
+  if (currentPlatform === "settings") {
+    outputsEl.innerHTML = `<div class="empty">暂无导出文件</div>`;
+    return;
+  }
   const data = await fetchJson(`/api/outputs?platform=${encodeURIComponent(currentPlatform)}`);
   renderOutputs(data.files || []);
 }
 
 async function loadAccounts(platformId) {
-  if (platformId === "daily") {
+  if (platformId === "daily" || platformId === "settings") {
     currentAccounts = [];
     renderAccounts();
     return;
@@ -290,7 +331,7 @@ async function loadAccounts(platformId) {
 }
 
 async function saveAccount() {
-  if (currentPlatform === "daily") return;
+  if (currentPlatform === "daily" || currentPlatform === "settings") return;
   const name = accountNameInput.value.trim();
   const url = accountUrlInput.value.trim();
   if (!name) {
@@ -342,8 +383,102 @@ async function loadScheduler() {
   renderScheduler(data);
 }
 
+async function loadSettings() {
+  try {
+    const data = await fetchJson("/api/settings");
+    renderSettings(data.settings || {});
+    renderSettingsCacheSummary(data.cache || {});
+  } catch (error) {
+    settingsStatusEl.textContent = `读取设置失败：${error.message || String(error)}`;
+    settingsStatusEl.className = "settings-status fail";
+  }
+}
+
+async function saveSettings() {
+  settingsStatusEl.textContent = "保存中...";
+  settingsStatusEl.className = "settings-status checking";
+  const result = await postJson("/api/settings", collectSettingsPayload());
+  if (result?.error) {
+    settingsStatusEl.textContent = result.error;
+    settingsStatusEl.className = "settings-status fail";
+    return;
+  }
+  renderSettings(result.settings || {});
+  renderSettingsCacheSummary(result.cache || {});
+  settingInputs.feishuAppSecret.value = "";
+  settingInputs.minimaxApiKey.value = "";
+  settingInputs.deepseekApiKey.value = "";
+  settingsStatusEl.textContent = "设置已保存";
+  settingsStatusEl.className = "settings-status ok";
+}
+
+async function runConfigChecks() {
+  settingsStatusEl.textContent = "检测中...";
+  settingsStatusEl.className = "settings-status checking";
+  settingsCheckListEl.innerHTML = "";
+  try {
+    const data = await fetchJson("/api/settings/checks");
+    renderConfigChecks(data);
+  } catch (error) {
+    settingsStatusEl.textContent = `检测失败：${error.message || String(error)}`;
+    settingsStatusEl.className = "settings-status fail";
+  }
+}
+
+function collectSettingsPayload() {
+  return {
+    settings: {
+      feishu: {
+        appId: settingInputs.feishuAppId.value.trim(),
+        appSecret: settingInputs.feishuAppSecret.value.trim() || "__KEEP__",
+        spreadsheetToken: settingInputs.feishuSpreadsheetToken.value.trim(),
+        wikiToken: settingInputs.feishuWikiToken.value.trim(),
+        sheets: {
+          douyin: settingInputs.feishuSheetDouyin.value.trim(),
+          xhs: settingInputs.feishuSheetXhs.value.trim(),
+          bilibili: settingInputs.feishuSheetBilibili.value.trim()
+        }
+      },
+      minimax: {
+        apiKey: settingInputs.minimaxApiKey.value.trim() || "__KEEP__",
+        baseUrl: settingInputs.minimaxBaseUrl.value.trim(),
+        model: settingInputs.minimaxModel.value.trim()
+      },
+      deepseek: {
+        apiKey: settingInputs.deepseekApiKey.value.trim() || "__KEEP__",
+        baseUrl: settingInputs.deepseekBaseUrl.value.trim(),
+        model: settingInputs.deepseekModel.value.trim()
+      }
+    }
+  };
+}
+
+async function cleanupCache() {
+  const result = await postJson("/api/cache/cleanup", {});
+  if (result?.error) {
+    settingsStatusEl.textContent = result.error;
+    settingsStatusEl.className = "settings-status fail";
+    return;
+  }
+  settingsStatusEl.textContent = `已清理 ${result.removed?.length || 0} 个缓存目录`;
+  settingsStatusEl.className = "settings-status ok";
+  renderSettingsCacheSummary(result.cache || {});
+}
+
+async function openCacheDir() {
+  const result = await postJson("/api/cache/open", {});
+  if (result?.error) {
+    settingsStatusEl.textContent = result.error;
+    settingsStatusEl.className = "settings-status fail";
+    return;
+  }
+  settingsStatusEl.textContent = `已尝试打开缓存目录：${result.path || ""}`;
+  settingsStatusEl.className = "settings-status ok";
+  renderSettingsCacheSummary(result.cache || {});
+}
+
 async function autoCheckLogin(platformId) {
-  if (platformId === "daily" || autoCheckedPlatforms.has(platformId)) return;
+  if (platformId === "daily" || platformId === "settings" || autoCheckedPlatforms.has(platformId)) return;
   autoCheckedPlatforms.add(platformId);
   await runLoginCheck(platformId);
 }
@@ -404,11 +539,13 @@ function renderPlatform() {
   loginButton.textContent = config.loginText;
   dateLabelEl.textContent = "开始日期（含）";
   untilField.hidden = false;
-  feishuWriteButton.hidden = currentPlatform === "daily";
+  crawlerToolbarEl.hidden = currentPlatform === "settings";
+  workspaceEl.hidden = currentPlatform === "settings";
   loginCheckButton.hidden = currentPlatform === "daily";
   loginCheckStatusEl.hidden = currentPlatform === "daily";
   schedulebarEl.hidden = currentPlatform !== "daily";
-  accountManagerEl.hidden = currentPlatform === "daily";
+  settingsPageEl.hidden = currentPlatform !== "settings";
+  accountManagerEl.hidden = currentPlatform === "daily" || currentPlatform === "settings";
   accountUrlInput.placeholder = config.accountHint || "";
 
   if (currentPlatform === "daily") {
@@ -437,7 +574,6 @@ function setRunning() {
   stopButton.disabled = !runState.running;
   loginButton.disabled = currentPlatform === "daily" || busy;
   loginCheckButton.disabled = currentPlatform === "daily" || Boolean(loginCheckingPlatform) || busy;
-  feishuWriteButton.disabled = currentPlatform === "daily" || busy;
   crawlModeSelect.disabled = busy;
   dailyRunButton.disabled = busy;
   saveScheduleButton.disabled = busy;
@@ -530,6 +666,63 @@ function renderAccounts() {
     item.append(text, actions);
     return item;
   }));
+}
+
+function renderConfigChecks(data = {}) {
+  const checks = data.checks || [];
+  const failed = checks.filter((check) => check.status === "fail").length;
+  const warned = checks.filter((check) => check.status === "warn").length;
+  settingsStatusEl.textContent = failed ? `${failed} 项失败` : warned ? `${warned} 项提示` : "检测通过";
+  settingsStatusEl.className = `settings-status ${failed ? "fail" : warned ? "warn" : "ok"}`;
+  settingsCheckListEl.innerHTML = "";
+  for (const check of checks) {
+    const item = document.createElement("div");
+    item.className = `settings-check-item ${check.status}`;
+    const name = document.createElement("div");
+    name.className = "settings-check-name";
+    name.textContent = check.id;
+    const message = document.createElement("div");
+    message.className = "settings-check-message";
+    message.textContent = check.message || "";
+    item.append(name, message);
+    settingsCheckListEl.appendChild(item);
+  }
+}
+
+function renderSettings(settings = {}) {
+  const feishu = settings.feishu || {};
+  const sheets = feishu.sheets || {};
+  const minimax = settings.minimax || {};
+  const deepseek = settings.deepseek || {};
+  const cache = settings.cache || {};
+  settingInputs.feishuAppId.value = feishu.appId?.value || "";
+  settingInputs.feishuSpreadsheetToken.value = feishu.spreadsheetToken?.value || "";
+  settingInputs.feishuWikiToken.value = feishu.wikiToken?.value || "";
+  settingInputs.feishuSheetDouyin.value = sheets.douyin?.value || "";
+  settingInputs.feishuSheetXhs.value = sheets.xhs?.value || "";
+  settingInputs.feishuSheetBilibili.value = sheets.bilibili?.value || "";
+  settingInputs.minimaxBaseUrl.value = minimax.baseUrl?.value || "https://api.minimaxi.com/v1";
+  settingInputs.minimaxModel.value = minimax.model?.value || "MiniMax-M3";
+  settingInputs.deepseekBaseUrl.value = deepseek.baseUrl?.value || "https://api.deepseek.com";
+  settingInputs.deepseekModel.value = deepseek.model?.value || "deepseek-v4-flash";
+  renderSecretSummary(settingInputs.feishuAppSecretSummary, feishu.appSecret);
+  renderSecretSummary(settingInputs.minimaxApiKeySummary, minimax.apiKey);
+  renderSecretSummary(settingInputs.deepseekApiKeySummary, deepseek.apiKey);
+  renderConfigStatus(settingInputs.deepseekConfigStatus, deepseek.apiKey?.set);
+}
+
+function renderSecretSummary(element, summary = {}) {
+  element.textContent = summary.set ? `已设置，尾号 ${summary.last4 || "****"}` : "未设置";
+}
+
+function renderConfigStatus(element, configured) {
+  element.textContent = configured ? "已配置" : "未配置";
+  element.className = configured ? "configured" : "missing";
+}
+
+function renderSettingsCacheSummary(cache = {}) {
+  cachePathEl.textContent = cache.path || cache.relativePath || "未加载";
+  cacheSizeEl.textContent = cache.formattedSize || "0 B";
 }
 
 function appendLocalLog(line) {

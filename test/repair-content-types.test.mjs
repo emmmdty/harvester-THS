@@ -111,7 +111,7 @@ test("content type repair writes only content type and review cells", async () =
     },
     {
       platformId: "xhs",
-      range: "sheet_xhs!G8:G8",
+      range: "sheet_xhs!O8:O8",
       rows: [["需审核"]]
     }
   ]);

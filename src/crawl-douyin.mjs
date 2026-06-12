@@ -41,11 +41,13 @@ const SINCE = parseDateInput(OPTIONS.since || process.env.SINCE || "2026-04-15",
 const REFERENCE_DATE = parseDateInput(OPTIONS.referenceDate || process.env.REFERENCE_DATE || formatDateInTimeZone(new Date()), "相对时间参考日期");
 const MAX_SCROLLS_PER_ACCOUNT = Number(process.env.MAX_SCROLLS_PER_ACCOUNT || 18);
 const MAX_DETAIL_PAGES = Number(process.env.MAX_DETAIL_PAGES || 120);
+const MAX_TOTAL_DETAIL_PAGES = Number(process.env.MAX_TOTAL_DETAIL_PAGES || 0);
 const OLD_ITEM_STOP_AFTER = Number(process.env.OLD_ITEM_STOP_AFTER || 4);
 const MIN_CHECK_BEFORE_STOP = Number(process.env.MIN_CHECK_BEFORE_STOP || 8);
 const DETAIL_READ_DELAY = parseDelayRange(process.env.DOUYIN_DETAIL_READ_DELAY || "3000-7000");
 const DETAIL_GAP_DELAY = parseDelayRange(process.env.DOUYIN_DETAIL_GAP_DELAY || "2000-5000");
 const SCROLL_DELAY = parseDelayRange(process.env.DOUYIN_SCROLL_DELAY || "2000-4000");
+const DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS = Number(process.env.DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS || 12_000);
 const HEADLESS = resolveHeadless();
 const DOUYIN_DETAIL_CACHE_VERSION = 3;
 
@@ -95,6 +97,7 @@ async function main() {
       refresh: shouldRefreshDetailCache()
     });
     const copyShare = shouldCopyDouyinShare({ mode: CRAWL_MODE });
+    const totalDetailBudget = createTotalDetailBudget(MAX_TOTAL_DETAIL_PAGES);
     for (const account of accounts) {
       console.log(`\n==> 处理抖音账号：${account.name}`);
       if (!account.url) {
@@ -111,10 +114,15 @@ async function main() {
           audit: audit.account(account.name),
           detailCache,
           resourceBlocker,
-          copyShare
+          copyShare,
+          totalDetailBudget,
         });
         rows.push(...accountRows);
         console.log(`抖音账号完成：${account.name}，命中 ${accountRows.length} 条`);
+        if (totalDetailBudget.reached()) {
+          console.log(`已达到全局详情页检查上限：${MAX_TOTAL_DETAIL_PAGES}`);
+          break;
+        }
       } catch (error) {
         const message = error.message || String(error);
         audit.account(account.name).stop("account-error");
@@ -137,7 +145,7 @@ async function main() {
   console.log(`\n抖音完成：导出 ${rows.length} 条`);
 }
 
-async function crawlAccountRecentFirst({ listPage, detailPage, accountName, profileUrl, audit, detailCache, resourceBlocker, copyShare }) {
+async function crawlAccountRecentFirst({ listPage, detailPage, accountName, profileUrl, audit, detailCache, resourceBlocker, copyShare, totalDetailBudget }) {
   await listPage.goto(profileUrl, { waitUntil: "domcontentloaded" });
   await listPage.waitForLoadState("domcontentloaded").catch(() => {});
   await listPage.waitForTimeout(3500);
@@ -205,8 +213,14 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
         console.log(`已达到详情页检查上限：${MAX_DETAIL_PAGES}`);
         return rows;
       }
+      if (totalDetailBudget.reached()) {
+        stop("total-detail-limit");
+        console.log(`已达到全局详情页检查上限：${MAX_TOTAL_DETAIL_PAGES}`);
+        return rows;
+      }
 
       checked += 1;
+      totalDetailBudget.record();
       audit?.recordChecked();
 
       let detail = restoreDouyinDetailFromCache(await detailCache.get(link.id));
@@ -310,10 +324,16 @@ async function getPublishedItemsWithFallback(listPage, { resourceBlocker } = {})
 
   console.log("抖音列表页未读到作品，关闭轻量页面模式重试一次。");
   links = await resourceBlocker.disableTemporarily(async () => {
-    await listPage.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
-    await listPage.waitForLoadState("domcontentloaded").catch(() => {});
+    await listPage.reload({ waitUntil: "domcontentloaded", timeout: DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS }).catch(() => {});
+    await listPage.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
     await listPage.waitForTimeout(1200);
     return getPublishedItems(listPage);
+  }, {
+    timeoutMs: DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS,
+    fallback: [],
+    onTimeout() {
+      console.warn(`抖音列表页关闭轻量模式重试超时，跳过该轮：${DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS}ms`);
+    }
   });
   return links;
 }
@@ -416,18 +436,25 @@ function waitForDouyinAwemeDetail(page, itemUrl) {
   const itemId = normalizeItemUrl(itemUrl)?.id || "";
   if (!itemId) return Promise.resolve(null);
 
-  return page.waitForResponse((response) => {
+  return page.waitForResponse(async (response) => {
     try {
       const url = new URL(response.url());
-      return url.pathname.includes("/aweme/v1/web/aweme/detail/")
-        && url.searchParams.get("aweme_id") === itemId
-        && response.status() === 200;
+      if (response.status() !== 200) return false;
+      if (url.pathname.includes("/aweme/v1/web/aweme/detail/")) {
+        return url.searchParams.get("aweme_id") === itemId;
+      }
+      if (url.pathname.includes("/aweme/v1/web/aweme/post/")) {
+        const json = await response.json();
+        return Array.isArray(json?.aweme_list)
+          && json.aweme_list.some((item) => String(item?.aweme_id || "") === itemId);
+      }
+      return false;
     } catch {
       return false;
     }
   }, { timeout: 15_000 })
     .then((response) => response.json())
-    .then((json) => extractDouyinApiDetail(json))
+    .then((json) => extractDouyinApiDetail(json, { itemId }))
     .catch(() => null);
 }
 
@@ -824,6 +851,22 @@ async function waitRandom(page, range, label = "停留") {
 function randomBetween(min, max) {
   if (max <= min) return min;
   return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+function createTotalDetailBudget(limit) {
+  const max = Math.max(0, Number(limit) || 0);
+  let checked = 0;
+  return {
+    record() {
+      checked += 1;
+    },
+    reached() {
+      return max > 0 && checked >= max;
+    },
+    count() {
+      return checked;
+    }
+  };
 }
 
 function restoreDouyinDetailFromCache(cached) {

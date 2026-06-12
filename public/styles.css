@@ -96,7 +96,8 @@ h2 {
 
 .toolbar,
 .schedulebar,
-.account-manager {
+.account-manager,
+.settings-manager {
   display: grid;
   gap: 12px;
   padding: 16px;
@@ -137,12 +138,15 @@ h2 {
   margin-top: -4px;
 }
 
-.account-manager {
+.account-manager,
+.settings-manager {
   box-shadow: none;
   margin-top: 18px;
 }
 
-.account-manager-title {
+.account-manager-title,
+.settings-manager-title,
+.settings-page-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -151,11 +155,17 @@ h2 {
   list-style: none;
 }
 
-.account-manager-title::-webkit-details-marker {
+.settings-page-title {
+  cursor: default;
+}
+
+.account-manager-title::-webkit-details-marker,
+.settings-manager-title::-webkit-details-marker {
   display: none;
 }
 
-.account-manager-title::after {
+.account-manager-title::after,
+.settings-manager-title::after {
   content: "展开";
   flex: 0 0 auto;
   min-width: 54px;
@@ -169,17 +179,23 @@ h2 {
   text-align: center;
 }
 
-.account-manager[open] .account-manager-title::after {
+.account-manager[open] .account-manager-title::after,
+.settings-manager[open] .settings-manager-title::after {
   content: "收起";
 }
 
-.account-manager-body {
+.account-manager-body,
+.settings-manager-body {
   display: grid;
   gap: 12px;
   padding-top: 12px;
 }
 
 .account-manager:not([open]) .account-manager-body {
+  display: none;
+}
+
+details.settings-manager:not([open]) .settings-manager-body {
   display: none;
 }
 
@@ -195,6 +211,161 @@ h2 {
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
+}
+
+.settings-status {
+  min-height: 24px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.settings-status.ok {
+  color: var(--accent);
+}
+
+.settings-status.warn,
+.settings-status.checking {
+  color: #756016;
+}
+
+.settings-status.fail {
+  color: var(--danger);
+}
+
+.settings-actions {
+  display: grid;
+  grid-template-columns: auto auto minmax(120px, 160px) auto 1fr;
+  gap: 12px;
+  align-items: end;
+}
+
+.settings-form {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-group {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.settings-group h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.settings-cache-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 180px) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.settings-info-line {
+  display: grid;
+  gap: 7px;
+  min-height: 42px;
+  align-content: center;
+}
+
+.settings-info-line span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-info-line strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.settings-info-line strong.configured {
+  color: var(--accent);
+}
+
+.settings-info-line strong.missing {
+  color: var(--danger);
+}
+
+.settings-account-summary {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.field small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.field small.configured {
+  color: var(--accent);
+}
+
+.field small.missing {
+  color: var(--danger);
+}
+
+.settings-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.settings-check-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-check-item {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.settings-check-item.ok {
+  border-left-color: var(--accent);
+}
+
+.settings-check-item.warn {
+  border-left-color: #b58a00;
+}
+
+.settings-check-item.fail {
+  border-left-color: var(--danger);
+}
+
+.settings-check-name {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.settings-check-message {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 .account-status.error {
@@ -382,7 +553,7 @@ button:disabled {
 
 .platform-tabs {
   display: inline-grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -499,6 +670,9 @@ button:disabled {
   .toolbar,
   .account-form,
   .account-item,
+  .settings-actions,
+  .settings-cache-summary,
+  .settings-check-item,
   .schedulebar,
   .toolbar-fields,
   .workspace {
@@ -515,7 +689,9 @@ button:disabled {
     align-items: stretch;
   }
 
-  .account-manager-title {
+  .account-manager-title,
+  .settings-manager-title,
+  .settings-page-title {
     align-items: flex-start;
     flex-direction: column;
   }

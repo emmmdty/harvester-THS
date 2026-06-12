@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { FeishuSheetsClient, loadFeishuConfig, validateFeishuConfig } from "./feishu-sheets.mjs";
 import { DAILY_PLATFORM_IDS, getPlatformConfig } from "./platform-config.mjs";
+import { runConfigChecks } from "./config-checks.mjs";
 
 async function main() {
   const validation = validateFeishuConfig();
@@ -31,6 +32,15 @@ async function main() {
   }
 
   if (hasMissingHeaders) process.exitCode = 1;
+
+  const configChecks = await runConfigChecks();
+  for (const check of configChecks.checks) {
+    const line = `配置检测 ${check.id}：${check.message}`;
+    if (check.status === "ok") console.log(line);
+    else if (check.status === "warn") console.warn(line);
+    else console.error(line);
+  }
+  if (!configChecks.ok) process.exitCode = 1;
 }
 
 main().catch((error) => {

@@ -29,6 +29,13 @@ test("extractDouyinTags filters truncated Douyin tag tokens without removing val
   assert.equal(extractDouyinTags(text), "#同花顺APP #A股 #问财 #股市");
 });
 
+test("extractDouyinTags flags and repairs known truncated brand tags", () => {
+  const text = "#同顺图解 #玩转同 #玩转同花 #同花顺投 #同花顺股民话 #同花顺钱 #投 #理 #期货通 #同顺图";
+
+  assert.equal(extractDouyinTags(text), "#同顺图解 #玩转同花顺 #同花顺投资 #同花顺股民话题 #同花顺钱包 #期货通");
+  assert.equal(isLowConfidenceDouyinTags(text), true);
+});
+
 test("extractDouyinTagsFromSources falls back to copied share text before page body", () => {
   const result = extractDouyinTagsFromSources({
     itemText: "三大运营商集体押注Token套餐！\n发布时间：2026-05-21 12:29",
@@ -137,6 +144,43 @@ test("extractDouyinApiDetail replaces truncated desc tags with explicit hashtag 
   });
 
   assert.equal(result.tags, "#同花顺APP #投资");
+});
+
+test("extractDouyinApiDetail reads the target item from Douyin post-list responses", () => {
+  const result = extractDouyinApiDetail({
+    aweme_list: [
+      {
+        aweme_id: "7640000000000000000",
+        desc: "推荐作品 #无关",
+        text_extra: [
+          { hashtag_name: "无关" }
+        ]
+      },
+      {
+        aweme_id: "7646703866871844139",
+        desc: "前 5 月 A 股最赚钱和最亏钱的行业都在这了！你踩中了哪个 #同顺图解 #同顺盘点 #玩转同花顺",
+        caption: " #同顺图解 #同顺盘点 #玩转同花顺",
+        create_time: Date.parse("2026-06-02T15:56:29+08:00") / 1000,
+        author: {
+          sec_uid: "MS4wLjABAAAArf6v6Z48Pma-bIrz00wVCu76ioePN0vKzHAM_w9DN8AOkLekEk13Ay8_L-74BBB8",
+          nickname: "同花顺投资"
+        },
+        text_extra: [
+          { hashtag_name: "同顺图解" },
+          { hashtag_name: "同顺盘点" },
+          { hashtag_name: "玩转同花顺" }
+        ],
+        video_tag: [
+          { tag_name: "财经" }
+        ]
+      }
+    ]
+  }, { itemId: "7646703866871844139" });
+
+  assert.equal(result.title, "前 5 月 A 股最赚钱和最亏钱的行业都在这了！你踩中了哪个");
+  assert.equal(result.tags, "#同顺图解 #同顺盘点 #玩转同花顺");
+  assert.equal(localDateKey(result.publishedAt), "2026-06-02");
+  assert.equal(result.authorName, "同花顺投资");
 });
 
 test("isLowConfidenceDouyinTags flags old cached truncated tags", () => {

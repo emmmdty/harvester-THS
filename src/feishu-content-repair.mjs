@@ -5,7 +5,7 @@ import "dotenv/config";
 import { dateFromBilibiliEpoch } from "./bilibili-published-date.mjs";
 import { extractBilibiliTags } from "./bilibili-detail-text.mjs";
 import { publishedDateFromDouyinItemId, publishedDateFromXhsNoteId } from "./content-identity.mjs";
-import { buildFeishuUrlCell, extractFeishuCellLink, normalizeAccountLabel, PLATFORM_HEADERS } from "./daily-records.mjs";
+import { buildFeishuUrlCell, extractFeishuCellLink, normalizeAccountLabel, PLATFORM_HEADERS, rowToFields as dailyRowToFields } from "./daily-records.mjs";
 import { formatDisplayDate } from "./date-utils.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
 import { organizePlatformRows, rowRangesFromMaterialRows, rowsToRewrite } from "./feishu-date-organizer.mjs";
@@ -138,7 +138,7 @@ export async function repairPlatformRows({
     }
 
     const rowNumber = index + dataStartRow;
-    const fields = rowFields(headers, row);
+    const fields = rowFields(platformId, row);
     const repair = await resolveRowRepair({
       platformId,
       fields,
@@ -412,9 +412,9 @@ async function readRepairSnapshotMetadata(root, store) {
       const rows = JSON.parse(await fs.readFile(path.join(dir, `${platformId}.after.json`), "utf8").catch(() => "[]"));
       if (!Array.isArray(rows)) continue;
       for (const rawRow of rows) {
-        const row = normalizeRowWidth(rawRow, PLATFORM_HEADERS[platformId].length);
+        const row = Array.isArray(rawRow) ? rawRow : [];
         if (!rowHasValue(row) || isSeparatorRow(platformId, row)) continue;
-        const fields = rowFields(PLATFORM_HEADERS[platformId], row);
+        const fields = rowFields(platformId, row);
         const title = cellText(fields["标题"]);
         const tags = cellText(fields["tag词"]);
         if (!title && !tags) continue;
@@ -611,8 +611,9 @@ function isSeparatorRow(platformId, row) {
   return /投稿视频/u.test(cellText(row[index]));
 }
 
-function rowFields(headers, row) {
-  return Object.fromEntries(headers.map((header, index) => [header, row[index]]));
+function rowFields(platformId, row) {
+  const fields = dailyRowToFields(platformId, row);
+  return Object.fromEntries((PLATFORM_HEADERS[platformId] || []).map((header) => [header, fields[header]]));
 }
 
 function rowHasValue(row) {

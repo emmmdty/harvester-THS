@@ -3,10 +3,16 @@ import { dateStringToDate, parsePublishedDateText } from "./date-utils.mjs";
 const TAG_PATTERN = /#[\p{Script=Han}\p{Letter}\p{Number}_-]+/gu;
 const SPACED_TAG_PATTERN = /#\s+([\p{Script=Han}\p{Letter}\p{Number}_-]+)/gu;
 const URL_PATTERN = /https?:\/\/\S+/giu;
-const INCOMPLETE_TAG_NAMES = new Set(["-", "_", "同", "同花"]);
+const INCOMPLETE_TAG_NAMES = new Set(["-", "_", "同", "同花", "同顺", "玩", "玩转", "投", "理"]);
 const RECOVERABLE_TAG_NAMES = new Map([
   ["同花顺A", "同花顺APP"],
-  ["同花顺AP", "同花顺APP"]
+  ["同花顺AP", "同花顺APP"],
+  ["玩转同", "玩转同花顺"],
+  ["玩转同花", "玩转同花顺"],
+  ["同花顺投", "同花顺投资"],
+  ["同花顺股民话", "同花顺股民话题"],
+  ["同花顺钱", "同花顺钱包"],
+  ["同顺图", "同顺图解"]
 ]);
 
 export function extractDouyinTags(text) {
@@ -58,11 +64,12 @@ export function isLowConfidenceDouyinTags(text) {
     || rawNames.some((name) => {
       const normalized = normalizeRawTagName(name);
       return Boolean(normalized && normalizeTagName(name) && normalizeTagName(name) !== normalized);
-    });
+    })
+    || rawNames.some((name) => isRecoverableTruncatedTagName(name));
 }
 
-export function extractDouyinApiDetail(rawDetail) {
-  const detail = rawDetail?.aweme_detail || rawDetail || {};
+export function extractDouyinApiDetail(rawDetail, { itemId = "" } = {}) {
+  const detail = selectDouyinAwemeDetail(rawDetail, { itemId });
   const title = extractDouyinTitle({ itemText: detail.desc || detail.caption || "" });
   const tagDetail = extractTagsFromAwemeDetail(detail);
   const authorSecUid = String(detail.author?.sec_uid || "").trim();
@@ -76,6 +83,18 @@ export function extractDouyinApiDetail(rawDetail) {
     authorProfileUrl: authorSecUid ? `https://www.douyin.com/user/${authorSecUid}` : "",
     authorName: String(detail.author?.nickname || "").trim()
   };
+}
+
+function selectDouyinAwemeDetail(rawDetail, { itemId = "" } = {}) {
+  if (!rawDetail || typeof rawDetail !== "object") return {};
+  if (rawDetail.aweme_detail) return rawDetail.aweme_detail;
+  const list = Array.isArray(rawDetail.aweme_list) ? rawDetail.aweme_list : [];
+  if (list.length) {
+    const wanted = String(itemId || "").trim();
+    if (wanted) return list.find((item) => String(item?.aweme_id || "") === wanted) || {};
+    return list[0] || {};
+  }
+  return rawDetail;
 }
 
 export function extractDouyinPublishedAtFromText(text, referenceDateString) {
@@ -281,6 +300,11 @@ function normalizeTagName(name) {
   if (INCOMPLETE_TAG_NAMES.has(normalized)) return "";
   if (/^[-_]+$/u.test(normalized)) return "";
   return normalized;
+}
+
+function isRecoverableTruncatedTagName(name) {
+  const normalized = normalizeRawTagName(name);
+  return RECOVERABLE_TAG_NAMES.has(normalized);
 }
 
 function normalizeRawTagName(name) {

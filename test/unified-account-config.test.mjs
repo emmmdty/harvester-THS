@@ -71,3 +71,28 @@ test("double-click launch docs and scripts describe the all-platform panel", asy
     await assert.rejects(fs.stat(path.join(ROOT, file)), { code: "ENOENT" });
   }));
 });
+
+test("daily-facing docs and scripts do not expose one-off channel rebuild tools", async () => {
+  const pkg = JSON.parse(await fs.readFile(path.join(ROOT, "package.json"), "utf8"));
+  const readme = await fs.readFile(path.join(ROOT, "README.md"), "utf8");
+  const app = await fs.readFile(path.join(ROOT, "public", "app.js"), "utf8");
+  const html = await fs.readFile(path.join(ROOT, "public", "index.html"), "utf8");
+  const dailySurface = `${readme}\n${app}\n${html}`;
+  const removedScripts = [
+    "sync:douyin-channel",
+    "sync:xhs-channel",
+    "sync:bilibili-channel",
+    "classify:bilibili-xhs-workbook",
+    "import:excel-history"
+  ];
+
+  for (const scriptName of removedScripts) {
+    assert.equal(pkg.scripts[scriptName], undefined, `${scriptName} should not be exposed as a package script`);
+    assert.doesNotMatch(dailySurface, new RegExp(scriptName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "u"));
+  }
+
+  assert.equal(pkg.scripts["history:crawl:douyin"], "node src/crawl-douyin-history.mjs");
+  assert.equal(pkg.scripts["history:crawl:xhs"], "node src/crawl-xhs-history.mjs");
+  assert.equal(pkg.scripts["history:crawl:bilibili"], "node src/crawl-bilibili-history.mjs");
+  assert.equal(pkg.scripts["collect:daily"], "node src/collect-daily.mjs");
+});

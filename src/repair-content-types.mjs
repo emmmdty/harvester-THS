@@ -3,6 +3,7 @@ import {
   DOUYIN_CONTENT_TYPE_DROPDOWN_VALUES,
   extractFeishuCellLink,
   PLATFORM_HEADERS,
+  rowToFields as dailyRowToFields,
   singleSelectDropdownCell,
   XHS_CONTENT_TYPE_DROPDOWN_VALUES
 } from "./daily-records.mjs";
@@ -158,8 +159,9 @@ export async function repairContentTypes({ client, platformIds = REPAIR_PLATFORM
 }
 
 function rowToFields(platformId, row) {
-  return Object.fromEntries(PLATFORM_HEADERS[platformId].map((header, index) => {
-    const value = row?.[index];
+  const fields = dailyRowToFields(platformId, row);
+  return Object.fromEntries(PLATFORM_HEADERS[platformId].map((header) => {
+    const value = fields[header];
     const text = header === "内容链接" ? extractFeishuCellLink(value) : cellText(value);
     return [header, text];
   }));

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FeishuSheetsClient, writeDailyPlatformRecords } from "../src/feishu-sheets.mjs";
+import { FeishuSheetsClient, loadFeishuConfig, writeDailyPlatformRecords } from "../src/feishu-sheets.mjs";
 
 test("FeishuSheetsClient retries Feishu rate-limit responses", async () => {
   let calls = 0;
@@ -95,6 +95,121 @@ test("FeishuSheetsClient extends sheet rows before inserting past current row co
     startIndex: 5798,
     endIndex: 5808
   });
+});
+
+test("loadFeishuConfig includes optional history sheet ids", () => {
+  const config = loadFeishuConfig({
+    FEISHU_APP_ID: "cli_xxx",
+    FEISHU_APP_SECRET: "secret",
+    FEISHU_SPREADSHEET_TOKEN: "sht_xxx",
+    FEISHU_WIKI_TOKEN: "",
+    FEISHU_SHEET_DOUYIN: "douyin",
+    FEISHU_SHEET_XHS: "xhs",
+    FEISHU_SHEET_BILIBILI: "bilibili",
+    FEISHU_SHEET_DOUYIN_HISTORY: "douyinHistory",
+    FEISHU_SHEET_XHS_HISTORY: "xhsHistory",
+    FEISHU_SHEET_BILIBILI_HISTORY: "bilibiliHistory"
+  });
+
+  assert.equal(config.sheets.douyinHistory, "douyinHistory");
+  assert.equal(config.sheets.xhsHistory, "xhsHistory");
+  assert.equal(config.sheets.bilibiliHistory, "bilibiliHistory");
+});
+
+test("FeishuSheetsClient can create a sheet and append generic-width rows", async () => {
+  const requests = [];
+  const client = new FeishuSheetsClient(
+    {
+      appId: "app",
+      appSecret: "secret",
+      apiBaseUrl: "https://example.test",
+      spreadsheetToken: "spreadsheet",
+      sheets: { douyinHistory: "historySheet" }
+    },
+    {
+      tenantAccessToken: "token",
+      fetch: async (url, options = {}) => {
+        requests.push({
+          url,
+          method: options.method || "GET",
+          body: options.body ? JSON.parse(options.body) : null
+        });
+        return {
+          ok: true,
+          async text() {
+            if (url.endsWith("/sheets_batch_update")) {
+              return JSON.stringify({
+                code: 0,
+                data: {
+                  replies: [
+                    { addSheet: { properties: { sheetId: "createdSheet", title: "抖音历史台账" } } }
+                  ]
+                }
+              });
+            }
+            return JSON.stringify({ code: 0, data: {} });
+          }
+        };
+      }
+    }
+  );
+
+  const created = await client.createSheet("抖音历史台账");
+  await client.appendRowsToSheet("douyinHistory", [["账号", "https://www.douyin.com/video/1"]], 14);
+
+  assert.equal(created.sheetId, "createdSheet");
+  const appendRequest = requests.find((request) => request.url.endsWith("/values_append"));
+  assert.equal(appendRequest.body.valueRange.range, "historySheet!A1:N1");
+  assert.equal(typeof appendRequest.body.valueRange.values[0][1], "string");
+});
+
+test("FeishuSheetsClient updates column widths using column dimensions", async () => {
+  const requests = [];
+  const client = new FeishuSheetsClient(
+    {
+      appId: "app",
+      appSecret: "secret",
+      apiBaseUrl: "https://example.test",
+      spreadsheetToken: "spreadsheet",
+      sheets: { douyinHistory: "historySheet" }
+    },
+    {
+      tenantAccessToken: "token",
+      fetch: async (url, options = {}) => {
+        requests.push({
+          url,
+          method: options.method || "GET",
+          body: options.body ? JSON.parse(options.body) : null
+        });
+        return {
+          ok: true,
+          async text() {
+            return JSON.stringify({ code: 0, data: {} });
+          }
+        };
+      }
+    }
+  );
+
+  await client.setColumnWidths("douyinHistory", [120, 560]);
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map((request) => request.body.dimension), [
+    {
+      sheetId: "historySheet",
+      majorDimension: "COLUMNS",
+      startIndex: 0,
+      endIndex: 1,
+      fixedSize: 120
+    },
+    {
+      sheetId: "historySheet",
+      majorDimension: "COLUMNS",
+      startIndex: 1,
+      endIndex: 2,
+      fixedSize: 560
+    }
+  ]);
 });
 
 test("writeDailyPlatformRecords renumbers sparse target date batches in compact writes", async () => {

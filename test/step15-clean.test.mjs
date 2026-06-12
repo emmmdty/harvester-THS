@@ -26,6 +26,25 @@ import {
 
 const urlCell = (url) => ({ type: "url", text: "打开链接", link: url });
 const dropdown = (value) => ({ type: "multipleValue", values: [value] });
+const douyinSeparatorRow = (title) => ["", title, "", "", "", "", "", "", "", "", "", "", "", ""];
+function douyinRow({ sequence = "1", date = "05 19", link, title = "", tags = "", account = "投资号", contentType = "资讯", review = "通过" }) {
+  return [
+    sequence,
+    date,
+    urlCell(link),
+    dropdown(account),
+    dropdown(contentType),
+    "",
+    "",
+    "",
+    "",
+    "",
+    "视频",
+    title,
+    tags,
+    review
+  ];
+}
 const pickFilterConfig = (config) => ({
   provider: config.provider,
   strictness: config.strictness,
@@ -630,20 +649,15 @@ test("local review signals return review when local provider is configured", asy
 test("cleanDailyStep15 applies the default batch pass quota", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "step15-quota-clean-"));
   const rows = [
-    ["", "0519 投稿视频", "", "", "", "", "", "", "", "", ""],
-    ...Array.from({ length: 30 }, (_, index) => [
-      String(index + 1),
-      "05 19",
-      urlCell(`https://www.douyin.com/video/pass-${index + 1}`),
-      `普通市场资讯 ${index + 1}`,
-      "#同花顺",
-      "",
-      "",
-      dropdown("投资号"),
-      dropdown("股友说"),
-      "通过",
-      ""
-    ])
+    douyinSeparatorRow("0519 投稿视频"),
+    ...Array.from({ length: 30 }, (_, index) => douyinRow({
+      sequence: String(index + 1),
+      link: `https://www.douyin.com/video/pass-${index + 1}`,
+      title: `普通市场资讯 ${index + 1}`,
+      tags: "#同花顺",
+      account: "投资号",
+      contentType: "股友说"
+    }))
   ];
   const calls = [];
   const client = {
@@ -712,9 +726,22 @@ test("step15 filtered sheet follows Douyin columns plus filter feedback", () => 
 
 test("sourceRowsForTargetDate reads material rows and keeps Feishu source row numbers", () => {
   const rows = [
-    ["", "0519 投稿视频", "", "", "", "", "", "", "", "", ""],
-    ["1", "05 19", urlCell("https://www.douyin.com/video/7641910769218506003"), "早盘观点", "#同花顺", "", "", dropdown("投资号"), dropdown("资讯"), "通过", ""],
-    ["2", "05 20", urlCell("https://www.douyin.com/video/7642330487012281641"), "隔日内容", "#同花顺", "", "", dropdown("财经号"), dropdown("资讯"), "通过", ""]
+    douyinSeparatorRow("0519 投稿视频"),
+    douyinRow({
+      sequence: "1",
+      link: "https://www.douyin.com/video/7641910769218506003",
+      title: "早盘观点",
+      tags: "#同花顺",
+      account: "投资号"
+    }),
+    douyinRow({
+      sequence: "2",
+      date: "05 20",
+      link: "https://www.douyin.com/video/7642330487012281641",
+      title: "隔日内容",
+      tags: "#同花顺",
+      account: "财经号"
+    })
   ];
 
   const sourceRows = sourceRowsForTargetDate("douyin", "2026-05-19", rows);
@@ -727,8 +754,14 @@ test("sourceRowsForTargetDate reads material rows and keeps Feishu source row nu
 
 test("sourceRowsForTargetDate can map template-backed rows to real Feishu row numbers", () => {
   const rows = [
-    ["", "0519 投稿视频", "", "", "", "", "", "", "", "", ""],
-    ["1", "05 19", urlCell("https://www.douyin.com/video/7641910769218506003"), "早盘观点", "#同花顺", "", "", dropdown("投资号"), dropdown("资讯"), "通过", ""]
+    douyinSeparatorRow("0519 投稿视频"),
+    douyinRow({
+      sequence: "1",
+      link: "https://www.douyin.com/video/7641910769218506003",
+      title: "早盘观点",
+      tags: "#同花顺",
+      account: "投资号"
+    })
   ];
 
   const sourceRows = sourceRowsForTargetDate("douyin", "2026-05-19", rows, 5);
@@ -744,10 +777,10 @@ test("cleanDailyStep15 defaults to filtering Douyin only", async () => {
     async readRows(platformId) {
       if (platformId === "douyin") {
         return [
-          ["", "0519 投稿视频", "", "", "", "", "", "", "", "", ""],
-          ["1", "05 19", urlCell("https://www.douyin.com/video/pass1"), "普通市场资讯", "#同花顺", "", "", dropdown("投资号"), dropdown("资讯"), "通过", ""],
-          ["2", "05 19", urlCell("https://www.douyin.com/video/reject1"), "600519 今日买点", "#股票", "", "", dropdown("财经号"), dropdown("资讯"), "通过", ""],
-          ["3", "05 19", urlCell("https://www.douyin.com/video/review1"), "模型复核内容", "#同花顺", "", "", dropdown("问财"), dropdown("资讯"), "通过", ""]
+          douyinSeparatorRow("0519 投稿视频"),
+          douyinRow({ sequence: "1", link: "https://www.douyin.com/video/pass1", title: "普通市场资讯", tags: "#同花顺", account: "投资号" }),
+          douyinRow({ sequence: "2", link: "https://www.douyin.com/video/reject1", title: "600519 今日买点", tags: "#股票", account: "财经号" }),
+          douyinRow({ sequence: "3", link: "https://www.douyin.com/video/review1", title: "模型复核内容", tags: "#同花顺", account: "问财" })
         ];
       }
       if (platformId === "xhs") {
@@ -816,15 +849,7 @@ test("cleanDailyStep15 defaults to filtering Douyin only", async () => {
   assert.equal(result.summary.xhs.kept, 0);
   assert.equal(result.summary.bilibili.kept, 0);
 
-  const feedbackHeaderCall = calls.find((call) => call[0] === "writeRows" && call[2] === "dySheet!F1:G1");
-  assert.deepEqual(feedbackHeaderCall[3], [["筛选状态", "简短理由"]]);
-  assert.ok(calls.some((call) => call[0] === "writeRows" && call[2] === "dySheet!K1:K1"));
-
-  const feedbackRows = calls
-    .filter((call) => call[0] === "writeRows" && /^dySheet!F(?!1:G1)\d+:G\d+$/.test(call[2]))
-    .map((call) => call[3][0]);
-  assert.deepEqual(feedbackRows.map((row) => row[0]), ["通过", "不投放", "需人工复核"]);
-  assert.match(feedbackRows[1][1], /股票代码|个股|买点/);
+  assert.equal(calls.some((call) => call[0] === "writeRows" && String(call[2]).startsWith("dySheet!")), false);
 
   const replaceCall = calls.find((call) => call[0] === "replaceSheetRows");
   assert.ok(replaceCall, "expected filtered sheet replacement");
@@ -858,8 +883,16 @@ test("cleanDailyStep15 sends review signals to the provider before calibration",
     async readRows(platformId) {
       if (platformId !== "douyin") return [];
       return [
-        ["", "0519 投稿视频", "", "", "", "", "", "", "", "", ""],
-        ["1", "05 19", urlCell("https://www.douyin.com/video/review-signal"), "5月18日涨停股复盘", "#热点 #问财", "", "", dropdown("问财"), dropdown("图文"), "", ""]
+        douyinSeparatorRow("0519 投稿视频"),
+        douyinRow({
+          sequence: "1",
+          link: "https://www.douyin.com/video/review-signal",
+          title: "5月18日涨停股复盘",
+          tags: "#热点 #问财",
+          account: "问财",
+          contentType: "图文",
+          review: ""
+        })
       ];
     },
     async readSheetRows() {
@@ -895,10 +928,7 @@ test("cleanDailyStep15 sends review signals to the provider before calibration",
   assert.deepEqual(seenProviderSignals.map((item) => item.ruleId), ["R9", "P2"]);
   assert.equal(result.summary.douyin.pass, 1);
   assert.equal(result.summary.douyin.reject, 0);
-  const feedbackRows = calls
-    .filter((call) => call[0] === "writeRows" && /^dySheet!F(?!1:G1)\d+:G\d+$/.test(call[2]))
-    .map((call) => call[3][0]);
-  assert.deepEqual(feedbackRows.map((row) => row[0]), ["通过"]);
+  assert.equal(calls.some((call) => call[0] === "writeRows" && String(call[2]).startsWith("dySheet!")), false);
 });
 
 test("cleanDailyStep15 writes template-backed feedback and filtered rows below the template header", async () => {
@@ -914,8 +944,14 @@ test("cleanDailyStep15 writes template-backed feedback and filtered rows below t
     async readRows(platformId) {
       if (platformId === "douyin") {
         return [
-          ["", "0519 投稿视频", "", "", "", "", "", "", "", "", "", ""],
-          ["1", "05 19", urlCell("https://www.douyin.com/video/pass-template"), "普通市场资讯", "#同花顺", "", "", dropdown("投资号"), dropdown("资讯"), "通过", ""]
+          douyinSeparatorRow("0519 投稿视频"),
+          douyinRow({
+            sequence: "1",
+            link: "https://www.douyin.com/video/pass-template",
+            title: "普通市场资讯",
+            tags: "#同花顺",
+            account: "投资号"
+          })
         ];
       }
       return [];
@@ -961,9 +997,7 @@ test("cleanDailyStep15 writes template-backed feedback and filtered rows below t
     filterWithProvider: async () => ({ status: "pass", ruleIds: [], briefReason: "未发现不投放风险。", evidence: [] })
   });
 
-  assert.ok(calls.some((call) => call[0] === "writeRows" && call[2] === "dySheet!F4:G4"));
-  assert.ok(calls.some((call) => call[0] === "writeRows" && call[2] === "dySheet!F6:G6"));
-  assert.ok(calls.some((call) => call[0] === "writeRows" && call[2] === "dySheet!K6:K6"));
+  assert.equal(calls.some((call) => call[0] === "writeRows" && String(call[2]).startsWith("dySheet!")), false);
   const replaceCall = calls.find((call) => call[0] === "replaceSheetDataRows");
   assert.ok(replaceCall);
   assert.equal(replaceCall[1], "step15");
