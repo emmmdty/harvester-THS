@@ -934,6 +934,53 @@ test("XHS daily JSON contentType image notes use browser fallback before yt-dlp"
   assert.equal(result.manifests[0].assets[0].fileName, "content-type-browser.jpg");
 });
 
+test("Douyin video links do not use contentType as a browser-first image-note signal", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-douyin-video-content-type-"));
+  let downloadCalled = false;
+  let fallbackCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "douyin",
+    items: [
+      {
+        platform: "douyin",
+        accountName: "测试账号",
+        publishedAt: "2026-03-09",
+        link: "https://www.douyin.com/video/7641910769218506003",
+        id: "7641910769218506003",
+        title: "被业务内容类型标记为图文的视频",
+        tags: "#股票",
+        contentType: "图文",
+        contentTypeReview: "通过。因为业务分类为图文。"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async ({ itemDir }) => {
+      downloadCalled = true;
+      const fileName = "douyin-video.mp4";
+      await fs.writeFile(path.join(itemDir, fileName), "mp4");
+      return {
+        ok: true,
+        source: "yt-dlp",
+        assets: [{ kind: "video", fileName }]
+      };
+    },
+    captureFallbackMaterial: async ({ previousResult }) => {
+      fallbackCalled = true;
+      return previousResult;
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: () => {}
+  });
+
+  assert.equal(downloadCalled, true);
+  assert.equal(fallbackCalled, false);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].source, "yt-dlp");
+  assert.equal(result.manifests[0].assets[0].fileName, "douyin-video.mp4");
+});
+
 test("XHS notes without explicit image-note signals keep yt-dlp first before browser fallback", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-unknown-ytdlp-first-"));
   let downloadCalled = false;

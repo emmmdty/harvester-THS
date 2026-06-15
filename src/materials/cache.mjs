@@ -413,11 +413,12 @@ function materialDecisionItem({ item = {}, rawItem = {} } = {}) {
 }
 
 function isImageNoteLike(item = {}) {
-  return /图文|note|image|图片/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || item.noteType || item.contentType || ""));
+  return /图文|note|image|图片/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || item.noteType || ""));
 }
 
 function hasExplicitXhsImageNoteSignal(item = {}) {
   if (isImageNoteLike(item)) return true;
+  if (/图文|note|image|图片/iu.test(String(item.contentType || ""))) return true;
   const tagType = classifyTags(item.tags || "", { platformId: "xhs" });
   return tagType === "图文";
 }
