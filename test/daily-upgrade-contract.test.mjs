@@ -885,6 +885,55 @@ test("XHS image-note material cache uses browser fallback before yt-dlp", async 
   assert.equal(logs.some((line) => /小红书图文素材使用浏览器兜底/u.test(line)), true);
 });
 
+test("XHS daily JSON contentType image notes use browser fallback before yt-dlp", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-content-type-browser-first-"));
+  let downloadCalled = false;
+  let fallbackCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [
+      {
+        platform: "xhs",
+        accountName: "测试账号",
+        publishedAt: "2026-03-09",
+        link: "https://www.xiaohongshu.com/discovery/item/6a2bcd2300000000220196b2?xsec_token=test",
+        id: "6a2bcd2300000000220196b2",
+        title: "真实 daily JSON 图文素材",
+        tags: "#股票",
+        contentType: "图文",
+        contentTypeReview: "通过。因为素材形态为图文。"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      downloadCalled = true;
+      throw new Error("xhs contentType image notes should not call yt-dlp first");
+    },
+    captureFallbackMaterial: async ({ itemDir, previousResult }) => {
+      fallbackCalled = true;
+      assert.match(previousResult.error, /yt-dlp 不适用/u);
+      const fileName = "content-type-browser.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return {
+        ok: true,
+        source: "browser-fallback",
+        fallbackReason: previousResult.fallbackReason,
+        assets: [{ kind: "image", fileName }]
+      };
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: () => {}
+  });
+
+  assert.equal(downloadCalled, false);
+  assert.equal(fallbackCalled, true);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].source, "browser-fallback");
+  assert.equal(result.manifests[0].assets[0].fileName, "content-type-browser.jpg");
+});
+
 test("XHS notes without explicit image-note signals keep yt-dlp first before browser fallback", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-unknown-ytdlp-first-"));
   let downloadCalled = false;

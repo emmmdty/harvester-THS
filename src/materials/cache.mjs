@@ -405,14 +405,15 @@ function materialDecisionItem({ item = {}, rawItem = {} } = {}) {
     itemType: raw.itemType ?? raw.type ?? "",
     type: raw.type ?? raw.itemType ?? "",
     materialKind: raw.materialKind ?? "",
-    assetType: raw.assetType ?? "",
-    mediaType: raw.mediaType ?? "",
-    noteType: raw.noteType ?? ""
+    assetType: raw.assetType ?? item.assetType ?? "",
+    mediaType: raw.mediaType ?? item.mediaType ?? "",
+    noteType: raw.noteType ?? item.noteType ?? "",
+    contentType: raw.contentType ?? item.contentType ?? ""
   };
 }
 
 function isImageNoteLike(item = {}) {
-  return /图文|note|image|图片/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || item.noteType || ""));
+  return /图文|note|image|图片/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || item.noteType || item.contentType || ""));
 }
 
 function hasExplicitXhsImageNoteSignal(item = {}) {
@@ -426,7 +427,7 @@ function isDouyinNoteLike(item = {}) {
 }
 
 function isVideoLike(item = {}) {
-  return /\/video\//iu.test(String(item.link || "")) || /视频|video|mp4|mov|m3u8/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || ""));
+  return /\/video\//iu.test(String(item.link || "")) || /视频|video|mp4|mov|m3u8/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || item.contentType || ""));
 }
 
 async function captureMaterialFallback({
