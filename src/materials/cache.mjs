@@ -12,7 +12,12 @@ import {
 } from "../douyin-channel-type-classifier/assets.mjs";
 import { getPlatformConfig, outputJsonPath } from "../platform-config.mjs";
 import { normalizePlatformItems } from "../platforms/index.mjs";
+import {
+  captureBrowserVisualFallback,
+  classifyBrowserFallbackError
+} from "./browser-fallback.mjs";
 import { shouldBlockFeishuWriteback } from "./failure-gate.mjs";
+import { classifyTags } from "../tag-rules.mjs";
 
 const DEFAULT_YTDLP_FORMAT = "worstvideo*+bestaudio/worst/best";
 const DEFAULT_YTDLP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -41,6 +46,7 @@ export async function cachePlatformMaterials({
   log = () => {}
 } = {}) {
   const normalizedItems = normalizePlatformItems(platformId, items);
+  const rawItems = Array.isArray(items) ? items : [];
   const itemDates = uniqueDatesForItems(normalizedItems, sinceDate || targetDate);
   for (const itemDate of itemDates) {
     const dateDir = path.join(root, "output", itemDate);
@@ -54,7 +60,9 @@ export async function cachePlatformMaterials({
   const downloadContext = await prepareMaterialDownloadContext({ platformId, root, env, log });
 
   try {
-    for (const item of normalizedItems) {
+    for (let itemIndex = 0; itemIndex < normalizedItems.length; itemIndex += 1) {
+      const item = normalizedItems[itemIndex];
+      const decisionItem = materialDecisionItem({ item, rawItem: rawItems[itemIndex] });
       const itemDate = item.publishedAt || sinceDate || targetDate;
       const platformDir = path.join(root, "output", itemDate, platformId);
       const id = safePathSegment(item.id || item.bvid || item.noteId || item.itemId || item.link || `item-${manifests.length + 1}`);
@@ -62,10 +70,22 @@ export async function cachePlatformMaterials({
       await fs.mkdir(itemDir, { recursive: true });
       let manifest = baseManifest({ platformId, item, itemDir });
       try {
-        const downloadResult = item.link
-          ? await download({ platformId, item, itemDir, downloadContext, env, log })
-          : { ok: false, error: "缺少素材链接，无法下载。" };
-        const materialResult = shouldUseVisualFallback({ platformId, item, result: downloadResult })
+        const prefersBrowserFallback = shouldPreferBrowserFallback({ platformId, item: decisionItem });
+        const downloadResult = prefersBrowserFallback
+          ? {
+              ok: false,
+              error: browserFirstFallbackReason({ platformId, item: decisionItem }),
+              source: "browser-fallback",
+              fallbackReason: browserFirstFallbackReason({ platformId, item: decisionItem }),
+              assets: []
+            }
+          : (item.link
+              ? await download({ platformId, item, itemDir, downloadContext, env, log })
+              : { ok: false, error: "缺少素材链接，无法下载。" });
+        if (prefersBrowserFallback) {
+          log(`${getPlatformConfig(platformId).label}图文素材使用浏览器兜底：${item.id || item.link || item.title || "unknown"}`);
+        }
+        const materialResult = shouldTryBrowserFallbackAfterDownload({ platformId, item, result: downloadResult, browserFirst: prefersBrowserFallback })
           ? await captureFallbackMaterial({ platformId, item, itemDir, root, previousResult: downloadResult, env, log })
           : downloadResult;
         const assets = normalizeAssets(materialResult.assets, itemDir);
@@ -285,6 +305,7 @@ async function enrichMediaAssets({ assets = [], itemDir, log = () => {} } = {}) 
     const frame = await extractVideoFrame({ videoPath, framePath, log });
     if (frame.ok) {
       framePaths.push(framePath);
+      imagePaths.push(framePath);
       normalizedAssets.push({
         kind: "image",
         path: framePath,
@@ -350,10 +371,62 @@ function baseManifest({ platformId, item, itemDir }) {
   };
 }
 
-function shouldUseVisualFallback({ platformId = "", item = {}, result = {} } = {}) {
-  if (platformId !== "douyin") return false;
+function shouldPreferBrowserFallback({ platformId = "", item = {} } = {}) {
+  if (!item?.link) return false;
+  if (platformId === "xhs") return hasExplicitXhsImageNoteSignal(item);
+  if (platformId === "douyin") return isDouyinNoteLike(item);
+  return false;
+}
+
+function shouldTryBrowserFallbackAfterDownload({ platformId = "", item = {}, result = {}, browserFirst = false } = {}) {
+  if (!item?.link) return false;
   if (result?.ok || (result?.assets || []).length > 0) return false;
-  return /\/note\//iu.test(String(item.link || "")) || /图文|note|image/iu.test(String(item.itemType || item.type || item.materialKind || ""));
+  if (browserFirst) return true;
+  if (platformId === "douyin") return isDouyinNoteLike(item) || isVideoLike(item);
+  if (platformId === "xhs") return isImageNoteLike(item) || isVideoLike(item);
+  return isVideoLike(item);
+}
+
+function browserFirstFallbackReason({ platformId = "", item = {} } = {}) {
+  if (platformId === "xhs" && hasExplicitXhsImageNoteSignal(item)) {
+    return "yt-dlp 不适用：小红书图文素材优先使用浏览器兜底。";
+  }
+  if (platformId === "douyin" && isDouyinNoteLike(item)) {
+    return "yt-dlp 不适用：抖音图文素材优先使用浏览器兜底。";
+  }
+  return "浏览器素材兜底优先。";
+}
+
+function materialDecisionItem({ item = {}, rawItem = {} } = {}) {
+  const raw = rawItem && typeof rawItem === "object" ? rawItem : {};
+  return {
+    link: item.link || raw.link || raw.noteUrl || raw.itemUrl || "",
+    tags: raw.tags ?? item.tags ?? "",
+    itemType: raw.itemType ?? raw.type ?? "",
+    type: raw.type ?? raw.itemType ?? "",
+    materialKind: raw.materialKind ?? "",
+    assetType: raw.assetType ?? "",
+    mediaType: raw.mediaType ?? "",
+    noteType: raw.noteType ?? ""
+  };
+}
+
+function isImageNoteLike(item = {}) {
+  return /图文|note|image|图片/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || item.noteType || ""));
+}
+
+function hasExplicitXhsImageNoteSignal(item = {}) {
+  if (isImageNoteLike(item)) return true;
+  const tagType = classifyTags(item.tags || "", { platformId: "xhs" });
+  return tagType === "图文";
+}
+
+function isDouyinNoteLike(item = {}) {
+  return /\/note\//iu.test(String(item.link || "")) || isImageNoteLike(item);
+}
+
+function isVideoLike(item = {}) {
+  return /\/video\//iu.test(String(item.link || "")) || /视频|video|mp4|mov|m3u8/iu.test(String(item.itemType || item.type || item.materialKind || item.assetType || item.mediaType || ""));
 }
 
 async function captureMaterialFallback({
@@ -366,7 +439,10 @@ async function captureMaterialFallback({
   log = () => {},
   fetch = globalThis.fetch
 } = {}) {
-  if (platformId !== "douyin" || !item?.link) return previousResult;
+  if (!item?.link) return previousResult;
+  if (platformId === "xhs") return captureXhsMaterialFallback({ item, itemDir, root, previousResult, env, log });
+  if (platformId !== "douyin" && isVideoLike(item)) return captureGenericBrowserFallback({ platformId, item, itemDir, root, previousResult, env, log });
+  if (platformId !== "douyin") return previousResult;
   const fallbackPrefix = previousResult.error || "yt-dlp 未获取到素材";
   let extracted = {};
   let extractError = "";
@@ -399,6 +475,8 @@ async function captureMaterialFallback({
       ...previousResult,
       ok: false,
       error: [fallbackPrefix, extractError ? `抖音图文视觉兜底失败：${extractError}` : "抖音图文视觉兜底未获取到素材"].filter(Boolean).join("；"),
+      source: previousResult.source || "browser-fallback",
+      fallbackReason: previousResult.fallbackReason || fallbackPrefix,
       assets: []
     };
   }
@@ -406,6 +484,8 @@ async function captureMaterialFallback({
     ...previousResult,
     ok: true,
     error: `${fallbackPrefix}；已使用抖音图文视觉兜底素材。`,
+    source: "browser-fallback",
+    fallbackReason: previousResult.fallbackReason || fallbackPrefix,
     assets,
     fallback: {
       kind: "douyin-note-visual",
@@ -413,6 +493,158 @@ async function captureMaterialFallback({
       screenshots: screenshotPaths.length,
       extractError,
       downloadAttempts: downloaded.downloadAttempts || []
+    }
+  };
+}
+
+async function captureXhsMaterialFallback({
+  item = {},
+  itemDir,
+  root = process.cwd(),
+  previousResult = {},
+  env = process.env,
+  log = () => {}
+} = {}) {
+  const fallbackPrefix = previousResult.error || "yt-dlp 未获取到素材";
+  let capture = null;
+  try {
+    capture = await captureBrowserVisualFallback({
+      platformId: "xhs",
+      item,
+      itemDir,
+      root,
+      env,
+      screenshotCount: Number(env.MATERIAL_FALLBACK_SCREENSHOTS || 3)
+    });
+  } catch (error) {
+    const reason = classifyBrowserFallbackError("xhs", error.message || String(error));
+    log(`小红书浏览器兜底失败：${item.id || item.link || item.title || "unknown"}：${reason}`);
+    return {
+      ...previousResult,
+      ok: false,
+      source: "browser-fallback",
+      fallbackReason: previousResult.fallbackReason || fallbackPrefix,
+      error: [fallbackPrefix, `小红书浏览器兜底失败：${reason}`].filter(Boolean).join("；"),
+      assets: []
+    };
+  }
+
+  const assets = [
+    ...(capture.imagePaths || []).map((filePath) => ({ kind: "image", path: filePath, source: "page-image" })),
+    ...(capture.screenshotPaths || []).map((filePath) => ({ kind: "image", path: filePath, source: "page-screenshot" }))
+  ];
+
+  if (assets.length === 0) {
+    const reason = capture?.riskReason || "未找到图片资源";
+    log(`小红书浏览器兜底失败：${item.id || item.link || item.title || "unknown"}：${reason}`);
+    return {
+      ...previousResult,
+      ok: false,
+      source: "browser-fallback",
+      fallbackReason: previousResult.fallbackReason || fallbackPrefix,
+      error: [fallbackPrefix, `小红书浏览器兜底失败：${reason}`].filter(Boolean).join("；"),
+      assets: [],
+      fallback: {
+        kind: "xhs-browser-visual",
+        screenshots: 0,
+        imageResources: 0,
+        pageUrl: capture?.pageUrl || "",
+        riskReason: reason
+      }
+    };
+  }
+
+  return {
+    ...previousResult,
+    ok: true,
+    source: "browser-fallback",
+    fallbackReason: previousResult.fallbackReason || fallbackPrefix,
+    error: `${fallbackPrefix}；已使用小红书浏览器兜底素材。`,
+    assets,
+    fallback: {
+      kind: "xhs-browser-visual",
+      screenshots: (capture.screenshotPaths || []).length,
+      imageResources: (capture.imagePaths || []).length,
+      pageUrl: capture.pageUrl || "",
+      downloadedImages: capture.downloadedImages || [],
+      riskReason: capture.riskReason || ""
+    }
+  };
+}
+
+async function captureGenericBrowserFallback({
+  platformId = "",
+  item = {},
+  itemDir,
+  root = process.cwd(),
+  previousResult = {},
+  env = process.env,
+  log = () => {}
+} = {}) {
+  const label = getPlatformConfig(platformId).label;
+  const fallbackPrefix = previousResult.error || "yt-dlp 未获取到素材";
+  let capture = null;
+  try {
+    capture = await captureBrowserVisualFallback({
+      platformId,
+      item,
+      itemDir,
+      root,
+      env,
+      screenshotCount: Number(env.MATERIAL_FALLBACK_SCREENSHOTS || 3)
+    });
+  } catch (error) {
+    const reason = classifyBrowserFallbackError(platformId, error.message || String(error));
+    log(`${label}浏览器兜底失败：${item.id || item.link || item.title || "unknown"}：${reason}`);
+    return {
+      ...previousResult,
+      ok: false,
+      source: "browser-fallback",
+      fallbackReason: previousResult.fallbackReason || fallbackPrefix,
+      error: [fallbackPrefix, `${label}浏览器兜底失败：${reason}`].filter(Boolean).join("；"),
+      assets: []
+    };
+  }
+
+  const assets = [
+    ...(capture.imagePaths || []).map((filePath) => ({ kind: "image", path: filePath, source: "page-image" })),
+    ...(capture.screenshotPaths || []).map((filePath) => ({ kind: "image", path: filePath, source: "page-screenshot" }))
+  ];
+
+  if (assets.length === 0) {
+    const reason = capture?.riskReason || "未找到图片资源";
+    log(`${label}浏览器兜底失败：${item.id || item.link || item.title || "unknown"}：${reason}`);
+    return {
+      ...previousResult,
+      ok: false,
+      source: "browser-fallback",
+      fallbackReason: previousResult.fallbackReason || fallbackPrefix,
+      error: [fallbackPrefix, `${label}浏览器兜底失败：${reason}`].filter(Boolean).join("；"),
+      assets: [],
+      fallback: {
+        kind: `${platformId}-browser-visual`,
+        screenshots: 0,
+        imageResources: 0,
+        pageUrl: capture?.pageUrl || "",
+        riskReason: reason
+      }
+    };
+  }
+
+  return {
+    ...previousResult,
+    ok: true,
+    source: "browser-fallback",
+    fallbackReason: previousResult.fallbackReason || fallbackPrefix,
+    error: `${fallbackPrefix}；已使用页面截图兜底素材。`,
+    assets,
+    fallback: {
+      kind: `${platformId}-browser-visual`,
+      screenshots: (capture.screenshotPaths || []).length,
+      imageResources: (capture.imagePaths || []).length,
+      pageUrl: capture.pageUrl || "",
+      downloadedImages: capture.downloadedImages || [],
+      riskReason: capture.riskReason || ""
     }
   };
 }

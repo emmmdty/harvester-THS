@@ -21,6 +21,7 @@ import {
   loadMiniMaxConfig
 } from "../src/ai/content-classification.mjs";
 import { shouldBlockFeishuWriteback } from "../src/materials/failure-gate.mjs";
+import { classifyBrowserFallbackError } from "../src/materials/browser-fallback.mjs";
 import {
   buildYtDlpArgs,
   cachePlatformMaterials,
@@ -124,6 +125,7 @@ test("material cache logs failures and retries the same material on later runs",
     id: "retry-note-1",
     link: "https://www.xiaohongshu.com/discovery/item/retry-note-1",
     title: "可重抓素材",
+    materialKind: "视频",
     publishedAt: "2026-03-09"
   };
   let attempts = 0;
@@ -141,6 +143,7 @@ test("material cache logs failures and retries the same material on later runs",
     targetDate: "2026-03-09",
     root,
     download,
+    captureFallbackMaterial: async ({ previousResult }) => previousResult,
     env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
     log: (line) => logs.push(line)
   });
@@ -158,6 +161,7 @@ test("material cache logs failures and retries the same material on later runs",
     targetDate: "2026-03-09",
     root,
     download,
+    captureFallbackMaterial: async ({ previousResult }) => previousResult,
     env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
     log: (line) => logs.push(line)
   });
@@ -818,6 +822,316 @@ test("Douyin note material cache uses visual fallback when yt-dlp does not suppo
   assert.equal(result.manifests[0].ok, true);
   assert.match(result.manifests[0].error, /视觉兜底素材/u);
   assert.equal(result.manifests[0].assets[0].fileName, "fallback.jpg");
+});
+
+test("XHS image-note material cache uses browser fallback before yt-dlp", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-image-browser-first-"));
+  const sourceJsonPath = path.join(root, "output", "xhs_notes_2026-03-09_to_2026-03-09.json");
+  const logs = [];
+  await fs.mkdir(path.dirname(sourceJsonPath), { recursive: true });
+  await fs.writeFile(sourceJsonPath, JSON.stringify({ items: [] }), "utf8");
+
+  let downloadCalled = false;
+  let fallbackCalled = false;
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    sinceDate: "2026-03-09",
+    untilDate: "2026-03-09",
+    root,
+    sourceJsonPath,
+    items: [
+      {
+        id: "6a2bcd2300000000220196b2",
+        link: "https://www.xiaohongshu.com/discovery/item/6a2bcd2300000000220196b2",
+        title: "小红书图文素材",
+        materialKind: "图文",
+        publishedAt: "2026-03-09"
+      }
+    ],
+    download: async () => {
+      downloadCalled = true;
+      throw new Error("xhs image notes should not call yt-dlp first");
+    },
+    captureFallbackMaterial: async ({ platformId, itemDir, previousResult }) => {
+      fallbackCalled = true;
+      assert.equal(platformId, "xhs");
+      assert.match(previousResult.error, /yt-dlp 不适用/u);
+      const fileName = "browser-fallback.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return {
+        ok: true,
+        source: "browser-fallback",
+        fallbackReason: "yt-dlp 不适用：小红书图文素材优先使用浏览器兜底。",
+        error: "已使用小红书图文浏览器兜底素材。",
+        assets: [{ kind: "image", fileName }]
+      };
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: (line) => logs.push(line)
+  });
+
+  const manifest = JSON.parse(await fs.readFile(
+    path.join(root, "output", "2026-03-09", "xhs", "6a2bcd2300000000220196b2", "manifest.json"),
+    "utf8"
+  ));
+  assert.equal(downloadCalled, false);
+  assert.equal(fallbackCalled, true);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(manifest.ok, true);
+  assert.equal(manifest.source, "browser-fallback");
+  assert.match(manifest.fallbackReason, /yt-dlp 不适用/u);
+  assert.equal(manifest.assets[0].fileName, "browser-fallback.jpg");
+  assert.equal(manifest.imagePaths.length, 1);
+  assert.equal(logs.some((line) => /小红书图文素材使用浏览器兜底/u.test(line)), true);
+});
+
+test("XHS notes without explicit image-note signals keep yt-dlp first before browser fallback", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-unknown-ytdlp-first-"));
+  let downloadCalled = false;
+  let fallbackCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [
+      {
+        id: "unknown-kind",
+        link: "https://www.xiaohongshu.com/discovery/item/unknown-kind",
+        title: "未知素材形态",
+        tags: "#股票",
+        publishedAt: "2026-03-09"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async ({ itemDir }) => {
+      downloadCalled = true;
+      const fileName = "thumbnail.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return { ok: true, assets: [{ kind: "image", fileName }] };
+    },
+    captureFallbackMaterial: async () => {
+      fallbackCalled = true;
+      return { ok: false, assets: [] };
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: () => {}
+  });
+
+  assert.equal(downloadCalled, true);
+  assert.equal(fallbackCalled, false);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].assets[0].fileName, "thumbnail.jpg");
+});
+
+test("XHS tag-mapped image notes use browser fallback before yt-dlp even without materialKind", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-tag-image-browser-first-"));
+  let downloadCalled = false;
+  let fallbackCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [
+      {
+        id: "tag-image-note",
+        link: "https://www.xiaohongshu.com/discovery/item/tag-image-note",
+        title: "图解素材",
+        tags: "#同顺图解 #投资",
+        publishedAt: "2026-03-09"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      downloadCalled = true;
+      return { ok: false, assets: [] };
+    },
+    captureFallbackMaterial: async ({ itemDir, previousResult }) => {
+      fallbackCalled = true;
+      assert.match(previousResult.error, /yt-dlp 不适用/u);
+      const fileName = "tag-browser.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return {
+        ok: true,
+        source: "browser-fallback",
+        fallbackReason: previousResult.fallbackReason,
+        assets: [{ kind: "image", fileName }]
+      };
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: () => {}
+  });
+
+  assert.equal(downloadCalled, false);
+  assert.equal(fallbackCalled, true);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].assets[0].fileName, "tag-browser.jpg");
+});
+
+test("XHS image-note browser fallback failure writes rerunnable failure manifest", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-browser-fail-"));
+  const logs = [];
+  let downloadCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [
+      {
+        id: "6a2bbfd3000000002200b0cf",
+        link: "https://www.xiaohongshu.com/discovery/item/6a2bbfd3000000002200b0cf",
+        title: "兜底失败图文",
+        materialKind: "图文",
+        publishedAt: "2026-03-09"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      downloadCalled = true;
+      return {
+        ok: false,
+        error: "yt-dlp 下载失败，退出码 1",
+        stderr: "ERROR: [XiaoHongShu] No video formats found!",
+        assets: []
+      };
+    },
+    captureFallbackMaterial: async () => ({
+      ok: false,
+      source: "browser-fallback",
+      fallbackReason: "yt-dlp 不适用：小红书图文素材优先使用浏览器兜底。",
+      error: "小红书浏览器兜底失败：未找到图片资源。",
+      assets: []
+    }),
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: (line) => logs.push(line)
+  });
+
+  const manifestPath = path.join(root, "output", "2026-03-09", "xhs", "6a2bbfd3000000002200b0cf", "manifest.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  assert.equal(downloadCalled, false);
+  assert.equal(result.stats.failed, 1);
+  assert.equal(manifest.ok, false);
+  assert.equal(manifest.source, "browser-fallback");
+  assert.match(manifest.fallbackReason, /yt-dlp 不适用/u);
+  assert.match(manifest.error, /小红书浏览器兜底失败/u);
+  assert.match(manifest.error, /未找到图片资源/u);
+  assert.equal(logs.some((line) => /小红书浏览器兜底失败/u.test(line)), true);
+  assert.equal(logs.some((line) => /后续重跑可重新抓取/u.test(line)), true);
+});
+
+test("XHS browser fallback treats inaccessible note pages as login or risk failures", () => {
+  assert.equal(
+    classifyBrowserFallbackError(
+      "xhs",
+      "https://www.xiaohongshu.com/404?error_msg=%E5%BD%93%E5%89%8D%E7%AC%94%E8%AE%B0%E6%9A%82%E6%97%B6%E6%97%A0%E6%B3%95%E6%B5%8F%E8%A7%88"
+    ),
+    "页面风控/登录失效"
+  );
+  assert.equal(classifyBrowserFallbackError("xhs", "当前笔记暂时无法浏览"), "页面风控/登录失效");
+});
+
+test("video material cache keeps yt-dlp first and falls back to page screenshots after failure", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-video-screenshot-fallback-"));
+  let downloadCalled = false;
+  let fallbackCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [
+      {
+        id: "video-403",
+        link: "https://www.xiaohongshu.com/discovery/item/video-403",
+        title: "视频素材",
+        materialKind: "视频",
+        publishedAt: "2026-03-09"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      downloadCalled = true;
+      return {
+        ok: false,
+        error: "yt-dlp 下载失败，退出码 1",
+        stderr: "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+        assets: []
+      };
+    },
+    captureFallbackMaterial: async ({ itemDir, previousResult }) => {
+      fallbackCalled = true;
+      assert.match(previousResult.stderr, /403/u);
+      const fileName = "page-screenshot.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return {
+        ok: true,
+        source: "browser-fallback",
+        fallbackReason: "视频 yt-dlp 失败后页面截图兜底。",
+        error: "yt-dlp 下载失败，退出码 1；已使用页面截图兜底素材。",
+        assets: [{ kind: "image", fileName }]
+      };
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: () => {}
+  });
+
+  assert.equal(downloadCalled, true);
+  assert.equal(fallbackCalled, true);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].ok, true);
+  assert.equal(result.manifests[0].source, "browser-fallback");
+  assert.equal(result.manifests[0].assets[0].fileName, "page-screenshot.jpg");
+});
+
+test("Bilibili video material cache also falls back to page screenshots after yt-dlp failure", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-bilibili-video-screenshot-fallback-"));
+  let downloadCalled = false;
+  let fallbackCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "bilibili",
+    items: [
+      {
+        id: "BV1tNLA6hEQh",
+        bvid: "BV1tNLA6hEQh",
+        link: "https://www.bilibili.com/video/BV1tNLA6hEQh/",
+        title: "B站视频素材",
+        materialKind: "视频",
+        publishedAt: "2026-03-09"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      downloadCalled = true;
+      return {
+        ok: false,
+        error: "yt-dlp 下载失败，退出码 1",
+        stderr: "ERROR: unable to download video data",
+        assets: []
+      };
+    },
+    captureFallbackMaterial: async ({ itemDir, previousResult }) => {
+      fallbackCalled = true;
+      assert.match(previousResult.error, /yt-dlp/u);
+      const fileName = "bilibili-page-screenshot.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return {
+        ok: true,
+        source: "browser-fallback",
+        fallbackReason: "视频 yt-dlp 失败后页面截图兜底。",
+        error: "yt-dlp 下载失败，退出码 1；已使用页面截图兜底素材。",
+        assets: [{ kind: "image", fileName }]
+      };
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: () => {}
+  });
+
+  assert.equal(downloadCalled, true);
+  assert.equal(fallbackCalled, true);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].ok, true);
+  assert.equal(result.manifests[0].source, "browser-fallback");
+  assert.equal(result.manifests[0].assets[0].fileName, "bilibili-page-screenshot.jpg");
 });
 
 test("Douyin extracted media fallback bounds stalled media downloads", async () => {
