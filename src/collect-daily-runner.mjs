@@ -18,6 +18,7 @@ export async function collectDaily({
   platforms,
   skipFeishu = false,
   crawlMode = "conservative",
+  strictMaterialGate = strictMaterialGateFromEnv(process.env),
   createClient = () => new FeishuSheetsClient(loadFeishuConfig()),
   runPlatformCrawler = defaultRunPlatformCrawler,
   readPlatformItems = defaultReadPlatformItems,
@@ -68,12 +69,18 @@ export async function collectDaily({
         materials: materialResult.stats || null,
         feishu: null
       };
-      if (gate.blocked) {
+      if (gate.blocked && strictMaterialGate) {
         platformSummary.status = "asset_blocked";
         platformSummary.error = gate.reason;
+        platformSummary.materialGate = gate;
         summary.platforms[platformId] = platformSummary;
-        log(`${config.label} 素材获取异常：${gate.reason}`);
+        log(`${config.label} 素材严格阻断：${gate.reason}`);
         continue;
+      }
+      if (gate.blocked) {
+        platformSummary.status = "asset_warning";
+        platformSummary.materialGate = gate;
+        log(`${config.label} 素材失败但已写基础数据：${gate.reason}`);
       }
       const classifiedItems = await classifyPlatformItems({
         platformId,
@@ -92,7 +99,7 @@ export async function collectDaily({
           client,
           items: classifiedItems
         });
-        platformSummary.status = "written";
+        platformSummary.status = gate.blocked ? "written_with_asset_failures" : "written";
         platformSummary.feishu = result.feishu;
         log(`${config.label} 飞书写入：新增 ${result.feishu.created}，更新 ${result.feishu.updated || 0}，跳过 ${result.feishu.skipped}`);
       } else {
@@ -122,6 +129,10 @@ export async function collectDaily({
   await writeSummary(summary, root);
   log(`\n每日采集汇总：${dailySummaryPath(sinceDate, root, untilDate)}`);
   return { ok: summary.ok, summary };
+}
+
+function strictMaterialGateFromEnv(env = process.env) {
+  return /^(1|true|yes|on)$/iu.test(String(env.STRICT_MATERIAL_GATE || env.MATERIAL_STRICT_GATE || "").trim());
 }
 
 export async function defaultRunPlatformCrawler(platformId, sinceDate, untilDate, crawlMode, { root = process.cwd() } = {}) {

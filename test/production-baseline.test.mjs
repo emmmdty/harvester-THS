@@ -6,7 +6,12 @@ import path from "node:path";
 
 import { planRuntimeCleanup } from "../src/runtime-cleanup.mjs";
 import { runProductionCheck } from "../src/prod-checker.mjs";
-import { recordSchedulerRun, readSchedulerRunHistory } from "../src/scheduler-run-history.mjs";
+import {
+  nextScheduledTargetDate,
+  recordSchedulerRun,
+  readSchedulerRunHistory,
+  summarizeDailyRunForScheduler
+} from "../src/scheduler-run-history.mjs";
 
 test("production check reports missing runtime prerequisites without shared password checks", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-prod-check-"));
@@ -122,13 +127,143 @@ test("scheduler run history records latest starts, skips, and exits without touc
   assert.equal(history.runs[1].exitCode, 0);
 });
 
+test("scheduler run history tracks pending backfill dates and chooses the oldest one first", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-scheduler-pending-"));
+  await recordSchedulerRun({
+    root,
+    event: {
+      status: "skipped",
+      targetDate: "2026-05-27",
+      reason: "当前有任务正在运行",
+      triggeredAt: "2026-05-28T03:30:00.000Z"
+    }
+  });
+  await recordSchedulerRun({
+    root,
+    event: {
+      status: "failed",
+      targetDate: "2026-05-26",
+      reason: "采集进程退出码 1",
+      triggeredAt: "2026-05-27T03:30:00.000Z"
+    }
+  });
+
+  let history = await readSchedulerRunHistory({ root });
+  assert.deepEqual(history.pendingBackfillDates, ["2026-05-26", "2026-05-27"]);
+  assert.deepEqual(nextScheduledTargetDate(history, "2026-05-29"), {
+    targetDate: "2026-05-26",
+    isBackfill: true,
+    pendingBackfillDates: ["2026-05-26", "2026-05-27"]
+  });
+
+  await recordSchedulerRun({
+    root,
+    event: {
+      status: "finished",
+      targetDate: "2026-05-26",
+      exitCode: 0,
+      triggeredAt: "2026-05-29T03:30:00.000Z",
+      finishedAt: "2026-05-29T03:32:00.000Z"
+    }
+  });
+
+  history = await readSchedulerRunHistory({ root });
+  assert.deepEqual(history.pendingBackfillDates, ["2026-05-27"]);
+});
+
+test("scheduler summary readback records platform outcomes and queues failed summaries for backfill", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-scheduler-summary-"));
+  await fs.mkdir(path.join(root, "output"), { recursive: true });
+  await fs.writeFile(path.join(root, "output", "daily_collect_2026-05-27.json"), JSON.stringify({
+    ok: false,
+    sinceDate: "2026-05-27",
+    untilDate: "2026-05-27",
+    platforms: {
+      douyin: {
+        status: "written_with_asset_failures",
+        collected: 10,
+        materials: { total: 10, failed: 3, consecutiveFailures: 3 },
+        materialGate: { blocked: true, reason: "素材获取失败率达到阈值：3/10，优先处理素材获取。" },
+        feishu: { created: 8, updated: 2, skipped: 0 }
+      },
+      xhs: {
+        status: "failed",
+        error: "登录失效",
+        collected: 0,
+        feishu: null
+      }
+    }
+  }), "utf8");
+
+  const summary = await summarizeDailyRunForScheduler({
+    root,
+    targetDate: "2026-05-27",
+    exitCode: 0
+  });
+  assert.equal(summary.ok, false);
+  assert.equal(summary.reason, "每日汇总存在失败平台：小红书。");
+  assert.equal(summary.platforms.douyin.status, "written_with_asset_failures");
+  assert.deepEqual(summary.platforms.douyin.materials, {
+    total: 10,
+    failed: 3,
+    consecutiveFailures: 3,
+    blocked: true,
+    reason: "素材获取失败率达到阈值：3/10，优先处理素材获取。"
+  });
+  assert.deepEqual(summary.platforms.douyin.feishu, { created: 8, updated: 2, skipped: 0 });
+
+  await recordSchedulerRun({
+    root,
+    event: {
+      status: summary.ok ? "finished" : "failed",
+      targetDate: "2026-05-27",
+      exitCode: 0,
+      reason: summary.reason,
+      dailySummary: summary
+    }
+  });
+  const history = await readSchedulerRunHistory({ root });
+  assert.deepEqual(history.pendingBackfillDates, ["2026-05-27"]);
+  assert.equal(history.latest.dailySummary.platforms.xhs.error, "登录失效");
+});
+
+test("scheduler summary readback treats a missing zero-exit summary as failed backfill work", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-scheduler-missing-summary-"));
+
+  const summary = await summarizeDailyRunForScheduler({
+    root,
+    targetDate: "2026-05-27",
+    exitCode: 0
+  });
+
+  assert.equal(summary.ok, false);
+  assert.equal(summary.missing, true);
+  assert.match(summary.reason, /未找到每日采集汇总/u);
+
+  await recordSchedulerRun({
+    root,
+    event: {
+      status: summary.ok ? "finished" : "failed",
+      targetDate: "2026-05-27",
+      exitCode: 0,
+      reason: summary.reason,
+      dailySummary: summary
+    }
+  });
+  const history = await readSchedulerRunHistory({ root });
+  assert.deepEqual(history.pendingBackfillDates, ["2026-05-27"]);
+});
+
 test("server records scheduled all-channel run starts, skips, and exits", async () => {
   const server = await fs.readFile(path.join(process.cwd(), "src", "server.mjs"), "utf8");
 
-  assert.match(server, /import \{ recordSchedulerRun \} from "\.\/scheduler-run-history\.mjs"/);
-  assert.match(server, /await recordSchedulerEvent\(\{ status: "skipped", targetDate, reason, triggeredAt \}\)/);
-  assert.match(server, /await recordSchedulerEvent\(\{ status: "started", targetDate, triggeredAt \}\)/);
-  assert.match(server, /status: "finished"/);
+  assert.match(server, /nextScheduledTargetDate, readSchedulerRunHistory, recordSchedulerRun, summarizeDailyRunForScheduler/u);
+  assert.match(server, /const target = nextScheduledTargetDate\(history, scheduledTargetDate\)/u);
+  assert.match(server, /定时补采中/u);
+  assert.match(server, /await recordSchedulerEvent\(\{ status: "skipped", targetDate, isBackfill: target\.isBackfill, reason, triggeredAt \}\)/u);
+  assert.match(server, /await recordSchedulerEvent\(\{ status: "started", targetDate, isBackfill: target\.isBackfill, triggeredAt \}\)/u);
+  assert.match(server, /const dailySummary = await summarizeDailyRunForScheduler\(\{ root: ROOT, targetDate, exitCode: code \}\)/u);
+  assert.match(server, /status: dailySummary\.ok \? "finished" : "failed"/u);
   assert.match(server, /exitCode: code/);
 });
 

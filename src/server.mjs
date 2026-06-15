@@ -13,7 +13,7 @@ import { addDaysToDateString, endExclusiveDateToInclusiveUntilDate, normalizeDat
 import { checkPlatformLogin, summarizeLoginCheckResults } from "./login-check.mjs";
 import { deletePlatformAccount, readPlatformAccounts, upsertPlatformAccount } from "./platform-accounts.mjs";
 import { loadPanelSettings, mergeSettingsPatch, panelSettingsEnv, publicEffectivePanelSettings, savePanelSettings } from "./panel-settings.mjs";
-import { recordSchedulerRun } from "./scheduler-run-history.mjs";
+import { nextScheduledTargetDate, readSchedulerRunHistory, recordSchedulerRun, summarizeDailyRunForScheduler } from "./scheduler-run-history.mjs";
 import { normalizeCrawlMode } from "./crawl-runtime.mjs";
 import {
   resolvePanelPlatform,
@@ -806,30 +806,38 @@ function applyScheduler() {
 }
 
 async function startScheduledDailyRun() {
-  const targetDate = previousDateString(new Date());
+  const scheduledTargetDate = previousDateString(new Date());
+  const history = await readSchedulerRunHistory({ root: ROOT });
+  const target = nextScheduledTargetDate(history, scheduledTargetDate);
+  const targetDate = target.targetDate;
   const triggeredAt = new Date().toISOString();
   if (currentRun || loginProcess || loginCheckRunning) {
     const reason = "当前有任务、登录浏览器或登录检测正在运行。";
     appendLog("daily", `定时任务触发，但${reason}本次跳过。`);
-    await recordSchedulerEvent({ status: "skipped", targetDate, reason, triggeredAt });
+    await recordSchedulerEvent({ status: "skipped", targetDate, isBackfill: target.isBackfill, reason, triggeredAt });
     return;
   }
 
   logsByPlatform.set("daily", []);
-  appendLog("daily", `定时任务触发，全渠道目标日期：${targetDate}，启动时间：${formatTimestamp()}`);
+  appendLog(
+    "daily",
+    target.isBackfill
+      ? `定时补采中，全渠道目标日期：${targetDate}，剩余待补 ${Math.max(0, target.pendingBackfillDates.length - 1)} 天，启动时间：${formatTimestamp()}`
+      : `定时任务触发，全渠道目标日期：${targetDate}，启动时间：${formatTimestamp()}`
+  );
   const accountGate = await checkPlatformAccountConfig(PLATFORMS.daily);
   if (!accountGate.ok) {
     appendLog("daily", `定时任务已中止：${accountGate.message}`);
-    await recordSchedulerEvent({ status: "skipped", targetDate, reason: accountGate.message, triggeredAt });
+    await recordSchedulerEvent({ status: "skipped", targetDate, isBackfill: target.isBackfill, reason: accountGate.message, triggeredAt });
     return;
   }
   const loginGate = await checkDailyPlatformLogins();
   if (!loginGate.ok) {
     appendLog("daily", `定时任务已中止：${loginGate.message}`);
-    await recordSchedulerEvent({ status: "skipped", targetDate, reason: loginGate.message, triggeredAt });
+    await recordSchedulerEvent({ status: "skipped", targetDate, isBackfill: target.isBackfill, reason: loginGate.message, triggeredAt });
     return;
   }
-  await recordSchedulerEvent({ status: "started", targetDate, triggeredAt });
+  await recordSchedulerEvent({ status: "started", targetDate, isBackfill: target.isBackfill, triggeredAt });
 
   currentRun = spawn(NODE_BIN, [
     PLATFORMS.daily.crawlScript,
@@ -849,6 +857,7 @@ async function startScheduledDailyRun() {
     await recordSchedulerEvent({
       status: "failed",
       targetDate,
+      isBackfill: target.isBackfill,
       reason: error.message || String(error),
       triggeredAt,
       finishedAt: new Date().toISOString()
@@ -859,10 +868,15 @@ async function startScheduledDailyRun() {
   currentRun.on("close", async (code) => {
     const finishedAt = new Date();
     appendLog("daily", `全渠道定时任务结束，退出码：${code}，结束时间：${formatTimestamp(finishedAt)}`);
+    const dailySummary = await summarizeDailyRunForScheduler({ root: ROOT, targetDate, exitCode: code });
+    if (dailySummary.reason) appendLog("daily", dailySummary.reason);
     await recordSchedulerEvent({
-      status: "finished",
+      status: dailySummary.ok ? "finished" : "failed",
       targetDate,
+      isBackfill: target.isBackfill,
       exitCode: code,
+      reason: dailySummary.reason,
+      dailySummary,
       triggeredAt,
       finishedAt: finishedAt.toISOString()
     });

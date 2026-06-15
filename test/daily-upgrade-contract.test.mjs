@@ -645,6 +645,16 @@ test("material failure gate blocks Feishu writeback at 30 percent or 10 consecut
   assert.equal(shouldBlockFeishuWriteback({ total: 50, failed: 1, consecutiveFailures: 10 }).blocked, true);
 });
 
+test("material strict gate configuration is documented as opt-in", async () => {
+  const envExample = await fs.readFile(path.join(process.cwd(), ".env.example"), "utf8");
+  const maintenance = await fs.readFile(path.join(process.cwd(), "docs", "developer-maintenance.md"), "utf8");
+
+  assert.match(envExample, /^STRICT_MATERIAL_GATE=0$/m);
+  assert.match(envExample, /默认先写飞书基础数据/u);
+  assert.match(maintenance, /默认不会因为素材失败阻断飞书基础数据写入/u);
+  assert.match(maintenance, /STRICT_MATERIAL_GATE=1/u);
+});
+
 test("tool checks use the correct version flag for ffmpeg and ffprobe", async () => {
   const ffmpeg = await defaultCommandExists("ffmpeg", {
     spawn: (command, args) => fakeVersionProcess({ command, args, okArgs: ["-version"], output: "ffmpeg version 8.1.1" })
@@ -1275,7 +1285,7 @@ function fakeVersionProcess({ command, args, okArgs, output }) {
   return child;
 }
 
-test("collectDaily skips platform Feishu writeback when material acquisition failure gate trips", async () => {
+test("collectDaily writes Feishu by default when material acquisition failure gate trips", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-daily-upgrade-"));
   const calls = [];
 
@@ -1285,6 +1295,61 @@ test("collectDaily skips platform Feishu writeback when material acquisition fai
     platforms: ["douyin"],
     skipFeishu: false,
     crawlMode: "conservative",
+    createClient: () => ({ client: true }),
+    runPlatformCrawler: async (platformId) => {
+      calls.push(`crawl:${platformId}`);
+    },
+    readPlatformItems: async (platformId) => {
+      calls.push(`read:${platformId}`);
+      return Array.from({ length: 10 }, (_, index) => ({
+        link: `https://www.douyin.com/video/${index + 1}`,
+        id: String(index + 1),
+        title: `素材${index + 1}`,
+        tags: "#同顺盘点",
+        publishedAt: "2026-03-09"
+      }));
+    },
+    cachePlatformMaterials: async ({ platformId }) => {
+      calls.push(`cache:${platformId}`);
+      return {
+        manifests: [],
+        stats: {
+          total: 10,
+          failed: 3,
+          consecutiveFailures: 0
+        }
+      };
+    },
+    classifyPlatformItems: async () => {
+      calls.push("classify");
+      return [];
+    },
+    writePlatformJsonToFeishu: async ({ platformId }) => {
+      calls.push(`write:${platformId}`);
+      return { collected: 10, feishu: { created: 10, skipped: 0 } };
+    },
+    log: () => {}
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ["crawl:douyin", "read:douyin", "cache:douyin", "classify", "write:douyin"]);
+  assert.equal(result.summary.platforms.douyin.status, "written_with_asset_failures");
+  assert.equal(result.summary.platforms.douyin.materialGate.blocked, true);
+  assert.match(result.summary.platforms.douyin.materialGate.reason, /素材获取失败率达到阈值/u);
+  assert.equal(result.summary.platforms.douyin.feishu.created, 10);
+});
+
+test("collectDaily strict material gate skips Feishu writeback when material failures trip the gate", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-daily-upgrade-"));
+  const calls = [];
+
+  const result = await collectDaily({
+    root,
+    targetDate: "2026-03-09",
+    platforms: ["douyin"],
+    skipFeishu: false,
+    crawlMode: "conservative",
+    strictMaterialGate: true,
     createClient: () => ({ client: true }),
     runPlatformCrawler: async (platformId) => {
       calls.push(`crawl:${platformId}`);
