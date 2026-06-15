@@ -19,7 +19,15 @@ const REQUIRED_FILES = [
 
 const REQUIRED_DIRS = [
   "src",
-  "public"
+  "public",
+  "docs"
+];
+
+const REQUIRED_PROMPT_DOCS = [
+  "docs/xhs-content-type-taxonomy.md",
+  "docs/douyin-channel-type-taxonomy.md",
+  "docs/bilibili-content-type-taxonomy.md",
+  "docs/developer-maintenance.md"
 ];
 
 const EXCLUDED_NAMES = new Set([
@@ -53,6 +61,7 @@ async function main() {
   console.log(`复制文件数：${copiedFiles}`);
   console.log(`包含 .env：${checks.hasEnv ? "是" : "否"}`);
   console.log(`包含启动脚本：${checks.hasLaunchers ? "是" : "否"}`);
+  console.log(`包含 Prompt 维护文档：${checks.hasPromptDocs ? "是" : "否"}`);
   console.log(`排除运行产物：${checks.hasExcludedRuntime ? "失败" : "通过"}`);
 }
 
@@ -104,9 +113,11 @@ async function removePreviousPackages() {
 async function verifyPackageTree(packageDir) {
   const allPaths = await listRelativeFiles(packageDir);
   const pathSet = new Set(allPaths);
+  const requiredPromptDocs = REQUIRED_PROMPT_DOCS.map((item) => item.split(path.sep).join(path.posix.sep));
   return {
     hasEnv: pathSet.has(".env"),
     hasLaunchers: pathSet.has("启动作品采集面板.command") && pathSet.has("启动作品采集面板.cmd"),
+    hasPromptDocs: requiredPromptDocs.every((item) => pathSet.has(item)),
     hasExcludedRuntime: allPaths.some((item) => (
       item.startsWith(".git/")
       || item.startsWith("node_modules/")
@@ -115,6 +126,7 @@ async function verifyPackageTree(packageDir) {
       || item.startsWith(".xhs-profile/")
       || item.startsWith(".douyin-profile/")
       || item.startsWith(".bilibili-profile/")
+      || item.endsWith("/manifest.json")
       || item.includes("/.DS_Store")
       || item === ".DS_Store"
     ))

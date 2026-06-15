@@ -60,10 +60,15 @@ http://127.0.0.1:3000/
 ## 维护说明
 
 历史抓取和分类维护说明见 [docs/developer-maintenance.md](docs/developer-maintenance.md)。
+Prompt 和分类维护资料随交付包提供，后续调整口径时优先查看：
+
+- [docs/xhs-content-type-taxonomy.md](docs/xhs-content-type-taxonomy.md)
+- [docs/douyin-channel-type-taxonomy.md](docs/douyin-channel-type-taxonomy.md)
+- [docs/bilibili-content-type-taxonomy.md](docs/bilibili-content-type-taxonomy.md)
 
 ## 交付说明
 
 - `.env` 已随交付包提供，不需要同事额外配置飞书。
 - `platform-accounts.json` 已随交付包提供，不需要同事维护账号列表。
 - 登录状态只保存在同事自己的电脑里，不随交付包分发。
-- 不要删除 `.env`、`platform-accounts.json`、`package.json`、`package-lock.json`、`src/`、`public/` 或启动脚本。
+- 不要删除 `.env`、`platform-accounts.json`、`package.json`、`package-lock.json`、`src/`、`public/`、`docs/` 或启动脚本。
