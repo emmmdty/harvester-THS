@@ -98,6 +98,7 @@ const settingInputs = {
 const cachePathEl = document.querySelector("#cache-path");
 const cacheSizeEl = document.querySelector("#cache-size");
 const openCacheDirButton = document.querySelector("#open-cache-dir");
+const DAILY_CHILD_PLATFORMS = new Set(["xhs", "douyin", "bilibili"]);
 
 let currentPlatform = "xhs";
 let logs = [];
@@ -270,7 +271,7 @@ function openEvents() {
         loginPlatform: payload.loginPlatform || "",
         loginChecking: Boolean(payload.loginChecking)
       };
-      renderProgress(payload.progress || null);
+      renderProgress(shouldRenderStatusProgress(payload) ? payload.progress || null : null);
       setRunning();
       return;
     }
@@ -810,6 +811,7 @@ function idleProgressText() {
 }
 
 function progressStageText(progress = {}) {
+  if (progress.stage === "crawl") return "正在采集作品";
   if (progress.stage === "material") return "正在准备素材";
   if (progress.stage === "classify") return "正在识别内容";
   if (progress.stage === "feishu") return "正在写入结果";
@@ -818,6 +820,11 @@ function progressStageText(progress = {}) {
 }
 
 function progressActionText(progress = {}) {
+  if (progress.stage === "crawl") {
+    if (progress.phase === "failed") return "采集失败，请查看日志";
+    if (progress.phase === "done") return "作品数据已采集，准备素材处理";
+    return "正在打开平台并采集作品数据";
+  }
   if (progress.stage === "material") {
     if (progress.phase === "fallback" || progress.phase === "fallback-extract") return "正在从页面补充图片素材";
     if (progress.phase === "manifest" || progress.phase === "done") return "素材已保存，准备进入下一步";
@@ -846,6 +853,13 @@ function shortProgressItemId(value = "") {
   const text = String(value || "").trim();
   if (text.length <= 18) return text;
   return `${text.slice(0, 8)}...${text.slice(-6)}`;
+}
+
+function shouldRenderStatusProgress(payload = {}) {
+  const payloadPlatform = String(payload.platform || "");
+  if (!payload.progress) return false;
+  if (payloadPlatform === currentPlatform) return true;
+  return currentPlatform === "daily" && DAILY_CHILD_PLATFORMS.has(payloadPlatform);
 }
 
 function renderOutputs(files) {

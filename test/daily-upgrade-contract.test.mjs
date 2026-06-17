@@ -233,6 +233,91 @@ test("material cache reports per-item progress through browser fallback and mani
   assert.equal(logs.some((line) => /抖音素材完成：7651879403881794866/u.test(line) && /manifest 已写入/u.test(line)), true);
 });
 
+test("collectDaily reports crawler start and done progress before material progress", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-crawl-progress-"));
+  const progress = [];
+
+  await collectDaily({
+    root,
+    targetDate: "2026-06-16",
+    sinceDate: "2026-06-16",
+    untilDate: "2026-06-16",
+    platforms: ["douyin"],
+    runPlatformCrawler: async () => {},
+    readPlatformItems: async () => ([{
+      id: "7651879403881794866",
+      link: "https://www.douyin.com/video/7651879403881794866",
+      title: "进度测试",
+      publishedAt: "2026-06-16"
+    }]),
+    cachePlatformMaterials: async ({ onProgress }) => {
+      onProgress({
+        platformId: "douyin",
+        stage: "material",
+        phase: "start",
+        completed: 0,
+        total: 1,
+        action: "抖音素材缓存开始",
+        updatedAt: "2026-06-17T10:00:00.000Z"
+      });
+      return { manifests: [], stats: { total: 1, failed: 0, consecutiveFailures: 0 } };
+    },
+    classifyPlatformItems: async ({ items }) => items,
+    writePlatformJsonToFeishu: async () => ({ feishu: { created: 1, updated: 0, skipped: 0 } }),
+    createClient: () => ({}),
+    log: () => {},
+    onProgress: (event) => progress.push(event)
+  });
+
+  assert.deepEqual(
+    progress.slice(0, 3).map((event) => [event.platformId, event.stage, event.phase, event.completed, event.total]),
+    [
+      ["douyin", "crawl", "start", 0, 1],
+      ["douyin", "crawl", "done", 1, 1],
+      ["douyin", "material", "start", 0, 1]
+    ]
+  );
+  assert.equal(progress[0].action, "抖音作品采集中");
+  assert.equal(progress[1].action, "抖音作品采集完成");
+});
+
+test("collectDaily reports the active stage when post-crawl work fails", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-active-stage-failure-"));
+  const progress = [];
+
+  const result = await collectDaily({
+    root,
+    targetDate: "2026-06-16",
+    sinceDate: "2026-06-16",
+    untilDate: "2026-06-16",
+    platforms: ["douyin"],
+    runPlatformCrawler: async () => {},
+    readPlatformItems: async () => ([{
+      id: "7651879403881794866",
+      link: "https://www.douyin.com/video/7651879403881794866",
+      title: "素材失败进度测试",
+      publishedAt: "2026-06-16"
+    }]),
+    cachePlatformMaterials: async () => {
+      throw new Error("mock material pipeline failed");
+    },
+    log: () => {},
+    onProgress: (event) => progress.push(event)
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.summary.platforms.douyin.error, "mock material pipeline failed");
+  assert.deepEqual(
+    progress.map((event) => [event.stage, event.phase]),
+    [
+      ["crawl", "start"],
+      ["crawl", "done"],
+      ["material", "failed"]
+    ]
+  );
+  assert.equal(progress.at(-1).action, "抖音素材处理失败");
+});
+
 test("AI classification reports per-item progress with multimodal provider state", async () => {
   const progress = [];
   const result = await classifyPlatformItems({

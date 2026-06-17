@@ -50,12 +50,47 @@ export async function collectDaily({
   if (skipFeishu) log("已启用 --skip-feishu，本次只采集并生成本地输出。");
 
   let client = null;
-  for (const platformId of platforms) {
+  for (let platformIndex = 0; platformIndex < platforms.length; platformIndex += 1) {
+    const platformId = platforms[platformIndex];
     const config = getPlatformConfig(platformId);
+    let failureProgress = {
+      stage: "crawl",
+      completed: platformIndex,
+      total: platforms.length,
+      action: `${config.label}作品采集失败`
+    };
     log(`\n==> 开始 ${config.label}`);
     try {
+      emitProgress({
+        onProgress,
+        log,
+        logProgress: shouldLogProgress(process.env),
+        platformId,
+        stage: "crawl",
+        phase: "start",
+        completed: platformIndex,
+        total: platforms.length,
+        action: `${config.label}作品采集中`
+      });
       await runPlatformCrawler(platformId, sinceDate, untilDate, crawlMode, { root });
+      emitProgress({
+        onProgress,
+        log,
+        logProgress: shouldLogProgress(process.env),
+        platformId,
+        stage: "crawl",
+        phase: "done",
+        completed: platformIndex + 1,
+        total: platforms.length,
+        action: `${config.label}作品采集完成`
+      });
       const items = await readPlatformItems(platformId, sinceDate, root, untilDate);
+      failureProgress = {
+        stage: "material",
+        completed: 0,
+        total: items.length,
+        action: `${config.label}素材处理失败`
+      };
       const materialResult = await cachePlatformMaterials({
         platformId,
         items,
@@ -86,6 +121,12 @@ export async function collectDaily({
         platformSummary.materialGate = gate;
         log(`${config.label} 素材失败但已写基础数据：${gate.reason}`);
       }
+      failureProgress = {
+        stage: "classify",
+        completed: 0,
+        total: items.length,
+        action: `${config.label}内容识别失败`
+      };
       const classifiedItems = await classifyPlatformItems({
         platformId,
         items,
@@ -94,6 +135,12 @@ export async function collectDaily({
         onProgress
       });
       if (!skipFeishu) {
+        failureProgress = {
+          stage: "feishu",
+          completed: 0,
+          total: classifiedItems.length,
+          action: `${config.label}飞书写入失败`
+        };
         emitProgress({
           onProgress,
           log,
@@ -135,6 +182,17 @@ export async function collectDaily({
       summary.platforms[platformId] = platformSummary;
     } catch (error) {
       const message = error.message || String(error);
+      emitProgress({
+        onProgress,
+        log,
+        logProgress: shouldLogProgress(process.env),
+        platformId,
+        stage: failureProgress.stage,
+        phase: "failed",
+        completed: failureProgress.completed,
+        total: failureProgress.total,
+        action: failureProgress.action
+      });
       const platformSummary = {
         status: "failed",
         collected: 0,

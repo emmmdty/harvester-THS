@@ -664,6 +664,7 @@ function statusPayload(platformId) {
 function broadcastStatus() {
   broadcast({
     type: "status",
+    platform: currentRun?.platform.id || "",
     running: Boolean(currentRun),
     runningPlatform: currentRun?.platform.id || "",
     loginRunning: Boolean(loginProcess),

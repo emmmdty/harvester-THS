@@ -99,6 +99,9 @@ test("UI renders all-channel progress from status and SSE updates", async () => 
   assert.match(app, /progressDetailText\(progress\)/u);
   assert.match(app, /idleProgressText\(\)/u);
   assert.match(app, /正在检测登录/u);
+  assert.match(app, /正在采集作品/u);
+  assert.match(app, /正在打开平台并采集作品数据/u);
+  assert.match(app, /作品数据已采集，准备素材处理/u);
   assert.match(app, /正在准备素材/u);
   assert.match(app, /正在识别内容/u);
   assert.match(app, /正在写入结果/u);
@@ -116,6 +119,18 @@ test("UI renders all-channel progress from status and SSE updates", async () => 
   assert.match(server, /HARVESTER_PROGRESS_LOGS: "1"/u);
   assert.match(server, /broadcast\(\{ type: "progress", platform: progress\.platformId/u);
   assert.match(server, /progress: progressByPlatform\.get\(platformId\) \|\| null/u);
+});
+
+test("status SSE progress is scoped before rendering in the current tab", async () => {
+  const app = await fs.readFile(path.join(ROOT, "public", "app.js"), "utf8");
+  const server = await fs.readFile(path.join(ROOT, "src", "server.mjs"), "utf8");
+
+  assert.match(app, /function shouldRenderStatusProgress\(payload = \{\}\)/u);
+  assert.match(app, /payloadPlatform === currentPlatform/u);
+  assert.match(app, /currentPlatform === "daily" && DAILY_CHILD_PLATFORMS\.has\(payloadPlatform\)/u);
+  assert.match(app, /renderProgress\(shouldRenderStatusProgress\(payload\) \? payload\.progress \|\| null : null\)/u);
+
+  assert.match(server, /platform: currentRun\?\.platform\.id \|\| ""/u);
 });
 
 test("UI exposes simple platform account management and keeps crawl all-account by default", async () => {
