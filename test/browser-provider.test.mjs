@@ -54,6 +54,12 @@ test("double-click launchers only install Playwright runtime packages", async ()
   assert.doesNotMatch(winLauncher, /patchright/iu);
   assert.match(macLauncher, /npm ci --registry=/u);
   assert.match(winLauncher, /npm ci --registry=/u);
+  assert.match(macLauncher, /export npm_config_registry="\$NPM_REGISTRY"/u);
+  assert.match(macLauncher, /export npm_config_disturl="https:\/\/npmmirror\.com\/mirrors\/node"/u);
+  assert.match(macLauncher, /export PLAYWRIGHT_DOWNLOAD_HOST/u);
+  assert.match(winLauncher, /set "npm_config_registry=%NPM_REGISTRY%"/u);
+  assert.match(winLauncher, /set "npm_config_disturl=https:\/\/npmmirror\.com\/mirrors\/node"/u);
+  assert.match(winLauncher, /set "PLAYWRIGHT_DOWNLOAD_HOST=https:\/\/npmmirror\.com\/mirrors\/playwright"/u);
   assert.match(macLauncher, /npx playwright install chromium/u);
   assert.match(winLauncher, /npx playwright install chromium/u);
 });

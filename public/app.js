@@ -53,6 +53,12 @@ const scheduleEnabledInput = document.querySelector("#schedule-enabled");
 const saveScheduleButton = document.querySelector("#save-schedule");
 const scheduleStatusEl = document.querySelector("#schedule-status");
 const logsEl = document.querySelector("#logs");
+const progressPanelEl = document.querySelector("#progress-panel");
+const progressStageEl = document.querySelector("#progress-stage");
+const progressActionEl = document.querySelector("#progress-action");
+const progressCountEl = document.querySelector("#progress-count");
+const progressUpdatedEl = document.querySelector("#progress-updated");
+const progressBarFillEl = document.querySelector("#progress-bar-fill");
 const outputsEl = document.querySelector("#outputs");
 const statusEl = document.querySelector("#status");
 const eyebrowEl = document.querySelector("#eyebrow");
@@ -264,7 +270,14 @@ function openEvents() {
         loginPlatform: payload.loginPlatform || "",
         loginChecking: Boolean(payload.loginChecking)
       };
+      renderProgress(payload.progress || null);
       setRunning();
+      return;
+    }
+
+    if (payload.type === "progress") {
+      if (payload.platform !== currentPlatform) return;
+      renderProgress(payload.progress || null);
       return;
     }
 
@@ -301,6 +314,7 @@ async function loadStatus() {
     loginChecking: Boolean(status.loginChecking)
   };
   renderLogs();
+  renderProgress(status.progress || null);
   setRunning();
 }
 
@@ -734,6 +748,104 @@ function appendLocalLog(line) {
 function renderLogs() {
   logsEl.textContent = logs.join("\n");
   logsEl.scrollTop = logsEl.scrollHeight;
+}
+
+function renderProgress(progress) {
+  const hasProgress = progress && (progress.stage || progress.action || progress.total || progress.completed);
+  progressPanelEl.classList.toggle("idle", !hasProgress);
+  if (!hasProgress) {
+    const idle = idleProgressText();
+    progressStageEl.textContent = idle.stage;
+    progressActionEl.textContent = idle.action;
+    progressCountEl.textContent = idle.count;
+    progressUpdatedEl.textContent = idle.detail;
+    progressBarFillEl.style.width = "0%";
+    return;
+  }
+
+  const total = Math.max(0, Number(progress.total || 0));
+  const completed = Math.max(0, Number(progress.completed || 0));
+  const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  progressStageEl.textContent = progressStageText(progress);
+  progressActionEl.textContent = progressActionText(progress);
+  progressCountEl.textContent = total > 0 ? `${percent}%` : "进行中";
+  progressUpdatedEl.textContent = progressDetailText(progress);
+  progressBarFillEl.style.width = `${percent}%`;
+}
+
+function idleProgressText() {
+  const loginThisPlatform = runState.loginRunning && runState.loginPlatform === currentPlatform;
+  const runningOtherPlatform = runState.running && runState.runningPlatform !== currentPlatform;
+  const loginOtherPlatform = runState.loginRunning && runState.loginPlatform !== currentPlatform;
+  if (runState.loginChecking) {
+    return {
+      stage: "正在检测登录",
+      action: "正在确认浏览器登录状态",
+      count: "检测中",
+      detail: "完成后即可开始采集"
+    };
+  }
+  if (loginThisPlatform) {
+    return {
+      stage: "等待登录完成",
+      action: "请在打开的浏览器中完成登录",
+      count: "登录中",
+      detail: "登录完成后关闭浏览器窗口"
+    };
+  }
+  if (runningOtherPlatform || loginOtherPlatform) {
+    return {
+      stage: "其他平台运行中",
+      action: "当前页面会保留本平台日志",
+      count: "等待",
+      detail: "切换到运行平台可查看实时进度"
+    };
+  }
+  return {
+    stage: "等待开始",
+    action: "暂无采集任务",
+    count: "待命",
+    detail: "未开始"
+  };
+}
+
+function progressStageText(progress = {}) {
+  if (progress.stage === "material") return "正在准备素材";
+  if (progress.stage === "classify") return "正在识别内容";
+  if (progress.stage === "feishu") return "正在写入结果";
+  if (progress.phase === "failed") return "需要查看日志";
+  return "正在运行";
+}
+
+function progressActionText(progress = {}) {
+  if (progress.stage === "material") {
+    if (progress.phase === "fallback" || progress.phase === "fallback-extract") return "正在从页面补充图片素材";
+    if (progress.phase === "manifest" || progress.phase === "done") return "素材已保存，准备进入下一步";
+    return "正在下载或提取作品素材";
+  }
+  if (progress.stage === "classify") {
+    if (progress.phase === "failed") return "部分内容识别失败，已保留基础数据";
+    if (/\b多模态\b/u.test(progress.action || "")) return "正在结合图片或视频理解内容";
+    return "正在根据标题、标签和素材判断内容类型";
+  }
+  if (progress.stage === "feishu") {
+    return progress.phase === "done" ? "飞书表格已更新" : "正在同步到飞书表格";
+  }
+  return "后台任务仍在执行";
+}
+
+function progressDetailText(progress = {}) {
+  const parts = [];
+  if (progress.itemId) parts.push(`作品 ${shortProgressItemId(progress.itemId)}`);
+  if (progress.total > 0) parts.push(`${Number(progress.completed || 0)}/${Number(progress.total || 0)}`);
+  parts.push(`更新 ${formatTime(progress.updatedAt || new Date().toISOString())}`);
+  return parts.join(" · ");
+}
+
+function shortProgressItemId(value = "") {
+  const text = String(value || "").trim();
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}...${text.slice(-6)}`;
 }
 
 function renderOutputs(files) {

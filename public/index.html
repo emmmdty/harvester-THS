@@ -76,6 +76,19 @@
               <h2>运行日志</h2>
               <button id="clear" type="button" class="ghost">清空</button>
             </div>
+            <div class="progress-panel" id="progress-panel" aria-live="polite">
+              <div class="progress-head">
+                <div>
+                  <div class="progress-stage" id="progress-stage">等待开始</div>
+                  <div class="progress-action" id="progress-action">暂无采集任务</div>
+                </div>
+                <div class="progress-count" id="progress-count">待命</div>
+              </div>
+              <div class="progress-bar" aria-hidden="true">
+                <div class="progress-bar-fill" id="progress-bar-fill"></div>
+              </div>
+              <div class="progress-updated" id="progress-updated">未开始</div>
+            </div>
             <pre id="logs" class="logs"></pre>
           </div>
 

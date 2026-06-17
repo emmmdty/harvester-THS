@@ -15,6 +15,7 @@ import { deletePlatformAccount, readPlatformAccounts, upsertPlatformAccount } fr
 import { loadPanelSettings, mergeSettingsPatch, panelSettingsEnv, publicEffectivePanelSettings, savePanelSettings } from "./panel-settings.mjs";
 import { nextScheduledTargetDate, readSchedulerRunHistory, recordSchedulerRun, summarizeDailyRunForScheduler } from "./scheduler-run-history.mjs";
 import { normalizeCrawlMode } from "./crawl-runtime.mjs";
+import { parseProgressLogLine } from "./progress-events.mjs";
 import {
   resolvePanelPlatform,
   validatePostOrigin
@@ -75,6 +76,7 @@ let loginCheckRunning = false;
 let schedulerJob = null;
 let schedulerConfig = { enabled: false, time: "11:30" };
 const logsByPlatform = new Map(Object.keys(PLATFORMS).map((id) => [id, []]));
+const progressByPlatform = new Map();
 const clients = new Set();
 
 const server = http.createServer(async (req, res) => {
@@ -386,6 +388,7 @@ async function startCrawl(res, platform, body) {
   }
 
   logsByPlatform.set(platform.id, []);
+  clearProgressForPlatform(platform.id);
   if (platform.id === "daily") {
     const loginGate = await checkDailyPlatformLogins();
     if (!loginGate.ok) {
@@ -401,7 +404,7 @@ async function startCrawl(res, platform, body) {
 
   currentRun = spawn(NODE_BIN, args, {
     cwd: ROOT,
-    env: { ...await effectiveEnv(), FORCE_COLOR: "0" },
+    env: { ...await effectiveEnv(), FORCE_COLOR: "0", HARVESTER_PROGRESS_LOGS: "1" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   currentRun.platform = platform;
@@ -520,6 +523,7 @@ function stopCrawl(res) {
 
 function clearLogs(res, platform) {
   logsByPlatform.set(platform.id, []);
+  clearProgressForPlatform(platform.id);
   broadcast({ type: "logs-cleared", platform: platform.id });
   sendJson(res, { ok: true, platform: platform.id });
 }
@@ -584,6 +588,18 @@ function appendLog(platformId, text) {
 
   const logs = logsByPlatform.get(platformId) || [];
   for (const part of parts) {
+    const progress = parseProgressLogLine(part);
+    if (progress) {
+      const progressPlatformId = progress.platformId || platformId;
+      progress.platformId = progressPlatformId;
+      progressByPlatform.set(progressPlatformId, progress);
+      if (platformId === "daily") progressByPlatform.set("daily", progress);
+      broadcast({ type: "progress", platform: progress.platformId, progress });
+      if (platformId === "daily" && progressPlatformId !== "daily") {
+        broadcast({ type: "progress", platform: "daily", progress });
+      }
+      continue;
+    }
     logs.push(part);
     if (logs.length > 600) logs.splice(0, logs.length - 600);
     broadcast({ type: "log", platform: platformId, line: part });
@@ -640,6 +656,7 @@ function statusPayload(platformId) {
     loginRunning: Boolean(loginProcess),
     loginPlatform: loginProcess?.platform.id || "",
     loginChecking: loginCheckRunning,
+    progress: progressByPlatform.get(platformId) || null,
     logs: logsByPlatform.get(platformId) || []
   };
 }
@@ -651,13 +668,22 @@ function broadcastStatus() {
     runningPlatform: currentRun?.platform.id || "",
     loginRunning: Boolean(loginProcess),
     loginPlatform: loginProcess?.platform.id || "",
-    loginChecking: loginCheckRunning
+    loginChecking: loginCheckRunning,
+    progress: progressByPlatform.get(currentRun?.platform.id || "") || null
   });
 }
 
 function broadcast(payload) {
   const data = `data: ${JSON.stringify(payload)}\n\n`;
   for (const client of clients) client.write(data);
+}
+
+function clearProgressForPlatform(platformId) {
+  progressByPlatform.delete(platformId);
+  if (platformId === "daily") {
+    for (const id of DAILY_PIPELINE_PLATFORM_IDS) progressByPlatform.delete(id);
+  }
+  broadcast({ type: "progress", platform: platformId, progress: null });
 }
 
 async function listOutputs(platformId = "xhs") {
@@ -819,6 +845,7 @@ async function startScheduledDailyRun() {
   }
 
   logsByPlatform.set("daily", []);
+  clearProgressForPlatform("daily");
   appendLog(
     "daily",
     target.isBackfill
@@ -845,7 +872,7 @@ async function startScheduledDailyRun() {
     targetDate
   ], {
     cwd: ROOT,
-    env: { ...await effectiveEnv(), FORCE_COLOR: "0" },
+    env: { ...await effectiveEnv(), FORCE_COLOR: "0", HARVESTER_PROGRESS_LOGS: "1" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   currentRun.platform = PLATFORMS.daily;

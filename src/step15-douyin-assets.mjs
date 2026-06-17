@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { resolveFfmpegCommand } from "./media-tools.mjs";
+
 const DOUYIN_PROFILE_DIR = ".douyin-profile";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -249,7 +251,7 @@ async function extractVideoFrames({ assetDir, videoPath }) {
   await fs.mkdir(framesDir, { recursive: true });
   const outputPattern = path.join(framesDir, "%03d.jpg");
   try {
-    await execFileAsync("ffmpeg", [
+    await execFileAsync(resolveFfmpegCommand(), [
       "-y",
       "-i",
       videoPath,
@@ -268,7 +270,7 @@ async function extractVideoFrames({ assetDir, videoPath }) {
 async function extractVideoAudio({ assetDir, videoPath }) {
   const audioPath = path.join(assetDir, "audio.wav");
   try {
-    await execFileAsync("ffmpeg", [
+    await execFileAsync(resolveFfmpegCommand(), [
       "-y",
       "-i",
       videoPath,

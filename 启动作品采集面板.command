@@ -8,6 +8,11 @@ NPM_REGISTRY="https://registry.npmmirror.com"
 PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
 PANEL_PORT_START="${PANEL_PORT_START:-3000}"
 PANEL_PORT_END="${PANEL_PORT_END:-3099}"
+export npm_config_registry="$NPM_REGISTRY"
+export npm_config_disturl="https://npmmirror.com/mirrors/node"
+export npm_config_fetch_retries="${npm_config_fetch_retries:-5}"
+export npm_config_fetch_retry_maxtimeout="${npm_config_fetch_retry_maxtimeout:-120000}"
+export PLAYWRIGHT_DOWNLOAD_HOST
 
 fail() {
   echo
@@ -31,7 +36,7 @@ echo "npm 已就绪：$(npm --version)"
 
 step "2/6 检查运行组件"
 if [ ! -d node_modules ]; then
-  echo "第一次启动需要安装运行组件，可能需要几分钟，请不要关闭窗口。"
+  echo "第一次启动需要安装运行组件，默认使用中国镜像：$NPM_REGISTRY"
   npm ci --registry="$NPM_REGISTRY" || fail "运行组件安装失败。请检查网络，或把这个窗口截图发给技术同事。"
 else
   echo "运行组件已存在，跳过安装。"
@@ -41,7 +46,7 @@ step "3/6 检查媒体工具"
 node scripts/ensure-media-tools.mjs || fail "媒体工具准备失败。请检查网络，或把这个窗口截图发给技术同事。"
 
 step "4/6 检查浏览器组件"
-PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_DOWNLOAD_HOST" npx playwright install chromium || fail "浏览器组件安装失败。请检查网络，或把这个窗口截图发给技术同事。"
+npx playwright install chromium || fail "浏览器组件安装失败。请检查网络，或把这个窗口截图发给技术同事。"
 
 step "5/6 选择可用端口"
 PORT="$(

@@ -5,6 +5,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { fetchWithTimeout } from "../ai/content-classification.mjs";
+import {
+  resolveFfmpegCommand,
+  resolveFfprobeCommand
+} from "../media-tools.mjs";
 
 const DOUYIN_PROFILE_DIR = ".douyin-profile";
 const execFileAsync = promisify(execFile);
@@ -277,7 +281,7 @@ async function extractVideoFrames({ assetDir, videoPath }) {
   try {
     const hasVideo = await hasVideoStream(videoPath);
     if (!hasVideo) return { ok: false, framePaths: [], error: "内容分类视频抽帧失败：视频文件无画面流" };
-    await execFileAsync("ffmpeg", [
+    await execFileAsync(resolveFfmpegCommand(), [
       "-y",
       "-i",
       videoPath,
@@ -295,7 +299,7 @@ async function extractVideoFrames({ assetDir, videoPath }) {
 
 async function hasVideoStream(videoPath) {
   try {
-    const { stdout } = await execFileAsync("ffprobe", [
+    const { stdout } = await execFileAsync(resolveFfprobeCommand(), [
       "-v",
       "error",
       "-select_streams",

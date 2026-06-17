@@ -18,6 +18,7 @@ import {
 } from "./browser-fallback.mjs";
 import { shouldBlockFeishuWriteback } from "./failure-gate.mjs";
 import { classifyTags } from "../tag-rules.mjs";
+import { emitProgress } from "../progress-events.mjs";
 import {
   resolveFfmpegCommand,
   resolveYtDlpCommand
@@ -48,7 +49,8 @@ export async function cachePlatformMaterials({
   captureFallbackMaterial = captureMaterialFallback,
   env = process.env,
   fetch = globalThis.fetch,
-  log = () => {}
+  log = () => {},
+  onProgress = null
 } = {}) {
   const normalizedItems = normalizePlatformItems(platformId, items);
   const rawItems = Array.isArray(items) ? items : [];
@@ -63,10 +65,22 @@ export async function cachePlatformMaterials({
   let consecutiveFailures = 0;
   let maxConsecutiveFailures = 0;
   const downloadContext = await prepareMaterialDownloadContext({ platformId, root, env, log });
+  emitProgress({
+    onProgress,
+    log,
+    logProgress: shouldLogProgress(env),
+    platformId,
+    stage: "material",
+    phase: "start",
+    completed: 0,
+    total: normalizedItems.length,
+    action: `${getPlatformConfig(platformId).label}素材缓存开始`
+  });
 
   try {
     for (let itemIndex = 0; itemIndex < normalizedItems.length; itemIndex += 1) {
       const item = normalizedItems[itemIndex];
+      const progressItemId = item.id || item.bvid || item.noteId || item.itemId || item.link || `item-${itemIndex + 1}`;
       const decisionItem = materialDecisionItem({ item, rawItem: rawItems[itemIndex] });
       const itemDate = item.publishedAt || sinceDate || targetDate;
       const platformDir = path.join(root, "output", itemDate, platformId);
@@ -75,6 +89,18 @@ export async function cachePlatformMaterials({
       await fs.mkdir(itemDir, { recursive: true });
       let manifest = baseManifest({ platformId, item, itemDir });
       try {
+        emitProgress({
+          onProgress,
+          log,
+          logProgress: shouldLogProgress(env),
+          platformId,
+          stage: "material",
+          phase: "prepare",
+          itemId: progressItemId,
+          completed: itemIndex,
+          total: normalizedItems.length,
+          action: `${getPlatformConfig(platformId).label}素材准备：${progressItemId}`
+        });
         const prefersBrowserFallback = shouldPreferBrowserFallback({ platformId, item: decisionItem });
         const downloadResult = prefersBrowserFallback
           ? {
@@ -89,9 +115,21 @@ export async function cachePlatformMaterials({
               : { ok: false, error: "缺少素材链接，无法下载。" });
         if (prefersBrowserFallback) {
           log(`${getPlatformConfig(platformId).label}图文素材使用浏览器兜底：${item.id || item.link || item.title || "unknown"}`);
+          emitProgress({
+            onProgress,
+            log,
+            logProgress: shouldLogProgress(env),
+            platformId,
+            stage: "material",
+            phase: "fallback",
+            itemId: progressItemId,
+            completed: itemIndex,
+            total: normalizedItems.length,
+            action: `${getPlatformConfig(platformId).label}图文素材使用浏览器兜底`
+          });
         }
         const materialResult = shouldTryBrowserFallbackAfterDownload({ platformId, item, result: downloadResult, browserFirst: prefersBrowserFallback })
-          ? await captureFallbackMaterial({ platformId, item, itemDir, root, previousResult: downloadResult, env, log, fetch })
+          ? await captureFallbackMaterial({ platformId, item, itemDir, root, previousResult: downloadResult, env, log, fetch, onProgress })
           : downloadResult;
         const assets = normalizeAssets(materialResult.assets, itemDir);
         const enriched = await enrichMediaAssets({ assets, itemDir, log });
@@ -125,6 +163,19 @@ export async function cachePlatformMaterials({
         consecutiveFailures = 0;
       }
       await fs.writeFile(path.join(itemDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+      log(`${getPlatformConfig(platformId).label}素材完成：${manifest.id || manifest.link || manifest.title || "unknown"}，manifest 已写入。`);
+      emitProgress({
+        onProgress,
+        log,
+        logProgress: shouldLogProgress(env),
+        platformId,
+        stage: "material",
+        phase: "manifest",
+        itemId: progressItemId,
+        completed: itemIndex + 1,
+        total: normalizedItems.length,
+        action: `${getPlatformConfig(platformId).label}素材 manifest 已写入`
+      });
       manifests.push(manifest);
     }
   } finally {
@@ -139,6 +190,17 @@ export async function cachePlatformMaterials({
   if (failed > 0) {
     log(`${getPlatformConfig(platformId).label}素材缓存完成，但有失败：${failed}/${stats.total}，连续失败 ${maxConsecutiveFailures}。后续可重新抓取同一素材。`);
   }
+  emitProgress({
+    onProgress,
+    log,
+    logProgress: shouldLogProgress(env),
+    platformId,
+    stage: "material",
+    phase: "done",
+    completed: manifests.length,
+    total: normalizedItems.length,
+    action: `${getPlatformConfig(platformId).label}素材缓存完成`
+  });
   return {
     manifests,
     stats,
@@ -446,7 +508,8 @@ async function captureMaterialFallback({
   previousResult = {},
   env = process.env,
   log = () => {},
-  fetch = globalThis.fetch
+  fetch = globalThis.fetch,
+  onProgress = null
 } = {}) {
   if (!item?.link) return previousResult;
   if (platformId === "xhs") return captureXhsMaterialFallback({ item, itemDir, root, previousResult, env, log });
@@ -456,12 +519,26 @@ async function captureMaterialFallback({
   let extracted = {};
   let extractError = "";
   try {
+    emitProgress({
+      onProgress,
+      log,
+      logProgress: shouldLogProgress(env),
+      platformId,
+      stage: "material",
+      phase: "fallback-extract",
+      itemId: item.id || item.link || item.title || "",
+      completed: 0,
+      total: 0,
+      action: "抖音图文页面媒体提取中"
+    });
     extracted = await extractDouyinAssetFromPage({ root, sourceRow: item });
+    log(`抖音图文页面媒体提取完成：${item.id || item.link || item.title || "unknown"}，视频 ${(extracted.videoUrls || []).length}，图片 ${(extracted.imageUrls || []).length}`);
   } catch (error) {
     extractError = error.message || String(error);
   }
 
   const downloaded = await downloadExtractedMedia({ assetDir: itemDir, extracted, fetch });
+  log(`抖音图文媒体下载完成：${item.id || item.link || item.title || "unknown"}，视频 ${downloaded.videoPath ? 1 : 0}，图片 ${(downloaded.imagePaths || []).length}`);
   const screenshotPaths = downloaded.hasVisualMedia || isFallbackScreenshotDisabled(env)
     ? []
     : await captureDouyinPageScreenshots({
@@ -473,6 +550,7 @@ async function captureMaterialFallback({
       log(`抖音图文页面截图兜底失败：${item.link}：${error.message || String(error)}`);
       return [];
     });
+  if (screenshotPaths.length > 0) log(`抖音图文页面截图兜底完成：${item.id || item.link || item.title || "unknown"}，截图 ${screenshotPaths.length}`);
 
   const assets = [
     ...(downloaded.videoPath ? [{ kind: "video", path: downloaded.videoPath }] : []),
@@ -741,6 +819,10 @@ function splitExtraArgs(value = "") {
   }
   if (current) args.push(current);
   return args;
+}
+
+function shouldLogProgress(env = process.env) {
+  return /^(1|true|yes|on)$/iu.test(String(env.HARVESTER_PROGRESS_LOGS || "").trim());
 }
 
 function safePathSegment(value = "") {

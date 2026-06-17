@@ -19,6 +19,10 @@ set "PANEL_PORT_END=3099"
 set "LAN_IP="
 set "NPM_REGISTRY=https://registry.npmmirror.com"
 set "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright"
+set "npm_config_registry=%NPM_REGISTRY%"
+set "npm_config_disturl=https://npmmirror.com/mirrors/node"
+set "npm_config_fetch_retries=5"
+set "npm_config_fetch_retry_maxtimeout=120000"
 
 echo.
 echo ==== 1/6 Check Node.js and npm ====
@@ -37,7 +41,7 @@ echo npm is ready: %NPM_VERSION%
 echo.
 echo ==== 2/6 Check runtime packages ====
 if not exist "node_modules" (
-  echo First launch needs to install packages. This may take a few minutes.
+  echo First launch needs to install packages from China mirror: %NPM_REGISTRY%
   call npm ci --registry="%NPM_REGISTRY%"
   if errorlevel 1 (
     echo Package installation failed. Please check network and send this window screenshot.

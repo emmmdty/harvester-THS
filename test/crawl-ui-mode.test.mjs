@@ -77,6 +77,47 @@ test("UI initializes directly without shared password auth", async () => {
   assert.match(app, /new EventSource\("\/api\/events"\)/);
 });
 
+test("UI renders all-channel progress from status and SSE updates", async () => {
+  const html = await fs.readFile(path.join(ROOT, "public", "index.html"), "utf8");
+  const app = await fs.readFile(path.join(ROOT, "public", "app.js"), "utf8");
+  const css = await fs.readFile(path.join(ROOT, "public", "styles.css"), "utf8");
+  const server = await fs.readFile(path.join(ROOT, "src", "server.mjs"), "utf8");
+
+  assert.match(html, /id="progress-panel"/u);
+  assert.match(html, /id="progress-stage"/u);
+  assert.match(html, /id="progress-action"/u);
+  assert.match(html, /id="progress-count"/u);
+  assert.match(html, /id="progress-updated"/u);
+
+  assert.match(app, /const progressPanelEl = document\.querySelector\("#progress-panel"\)/u);
+  assert.match(app, /renderProgress\(status\.progress \|\| null\)/u);
+  assert.match(app, /renderProgress\(payload\.progress \|\| null\)/u);
+  assert.match(app, /payload\.type === "progress"/u);
+  assert.match(app, /progress\.completed/u);
+  assert.match(app, /progress\.total/u);
+  assert.match(app, /progressActionText\(progress\)/u);
+  assert.match(app, /progressDetailText\(progress\)/u);
+  assert.match(app, /idleProgressText\(\)/u);
+  assert.match(app, /正在检测登录/u);
+  assert.match(app, /正在准备素材/u);
+  assert.match(app, /正在识别内容/u);
+  assert.match(app, /正在写入结果/u);
+  assert.doesNotMatch(app, /provider/u);
+  assert.doesNotMatch(html, />0\/0</u);
+  assert.doesNotMatch(html, /最后更新：-/u);
+
+  assert.match(css, /\.progress-panel/u);
+  assert.match(css, /\.progress-bar-fill/u);
+  assert.match(css, /\.panel-title h2\s*\{[\s\S]*white-space:\s*nowrap/u);
+  assert.match(css, /\.panel-title \.ghost\s*\{[\s\S]*width:\s*auto/u);
+
+  assert.match(server, /parseProgressLogLine/u);
+  assert.match(server, /progressByPlatform/u);
+  assert.match(server, /HARVESTER_PROGRESS_LOGS: "1"/u);
+  assert.match(server, /broadcast\(\{ type: "progress", platform: progress\.platformId/u);
+  assert.match(server, /progress: progressByPlatform\.get\(platformId\) \|\| null/u);
+});
+
 test("UI exposes simple platform account management and keeps crawl all-account by default", async () => {
   const html = await fs.readFile(path.join(ROOT, "public", "index.html"), "utf8");
   const app = await fs.readFile(path.join(ROOT, "public", "app.js"), "utf8");

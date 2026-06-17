@@ -36,6 +36,10 @@ import {
 import { detectXhsMaterialKind } from "../src/platforms/xhs/material-kind.mjs";
 import { checkMaterialCookies, defaultCommandExists } from "../src/config-checks.mjs";
 import { downloadExtractedMedia } from "../src/douyin-channel-type-classifier/assets.mjs";
+import {
+  formatProgressLogLine,
+  parseProgressLogLine
+} from "../src/progress-events.mjs";
 
 function urlCell(link) {
   return { type: "url", text: link, link };
@@ -149,7 +153,7 @@ test("material cache logs failures and retries the same material on later runs",
     root,
     download,
     captureFallbackMaterial: async ({ previousResult }) => previousResult,
-    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0", HARVESTER_PROGRESS_LOGS: "1" },
     log: (line) => logs.push(line)
   });
   const manifestPath = path.join(root, "output", "2026-03-09", "xhs", "retry-note-1", "manifest.json");
@@ -176,6 +180,129 @@ test("material cache logs failures and retries the same material on later runs",
   assert.equal(second.stats.failed, 0);
   assert.equal(retriedManifest.ok, true);
   assert.equal(retriedManifest.assets.length, 1);
+});
+
+test("material cache reports per-item progress through browser fallback and manifest write", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-material-progress-"));
+  const progress = [];
+  const logs = [];
+
+  await cachePlatformMaterials({
+    platformId: "douyin",
+    items: [
+      {
+        id: "7651879403881794866",
+        link: "https://www.douyin.com/note/7651879403881794866",
+        title: "图文素材",
+        publishedAt: "2026-06-16"
+      }
+    ],
+    targetDate: "2026-06-16",
+    root,
+    download: async () => {
+      throw new Error("Douyin notes should go browser-first");
+    },
+    captureFallbackMaterial: async ({ itemDir, previousResult }) => {
+      assert.equal(previousResult.source, "browser-fallback");
+      const fileName = "browser.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return {
+        ok: true,
+        source: "browser-fallback",
+        fallbackReason: previousResult.fallbackReason,
+        assets: [{ kind: "image", fileName }]
+      };
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: (line) => logs.push(line),
+    onProgress: (event) => progress.push(event)
+  });
+
+  assert.deepEqual(
+    progress.map((event) => [event.stage, event.phase, event.itemId, event.completed, event.total]),
+    [
+      ["material", "start", "", 0, 1],
+      ["material", "prepare", "7651879403881794866", 0, 1],
+      ["material", "fallback", "7651879403881794866", 0, 1],
+      ["material", "manifest", "7651879403881794866", 1, 1],
+      ["material", "done", "", 1, 1]
+    ]
+  );
+  assert.equal(progress.every((event) => event.updatedAt), true);
+  assert.equal(logs.some((line) => /抖音图文素材使用浏览器兜底：7651879403881794866/u.test(line)), true);
+  assert.equal(logs.some((line) => /抖音素材完成：7651879403881794866/u.test(line) && /manifest 已写入/u.test(line)), true);
+});
+
+test("AI classification reports per-item progress with multimodal provider state", async () => {
+  const progress = [];
+  const result = await classifyPlatformItems({
+    platformId: "douyin",
+    items: [
+      {
+        id: "7651879403881794866",
+        link: "https://www.douyin.com/note/7651879403881794866",
+        title: "图文素材",
+        tags: "#同顺图解"
+      }
+    ],
+    materialResult: {
+      manifests: [
+        {
+          id: "7651879403881794866",
+          ok: true,
+          imagePaths: ["/tmp/image.jpg"],
+          assets: [{ kind: "image", path: "/tmp/image.jpg" }]
+        }
+      ]
+    },
+    classify: async () => ({
+      ok: true,
+      primaryType: "图文",
+      secondaryType: "盘点",
+      confidence: 0.9,
+      reason: "素材为图文。",
+      provider: "minimax",
+      usedMultimodal: true,
+      contentTypeReview: "通过。因为素材为图文。",
+      aiContentRemark: "使用minimax，使用多模态能力。"
+    }),
+    onProgress: (event) => progress.push(event)
+  });
+
+  assert.equal(result[0].primaryType, "图文");
+  assert.deepEqual(
+    progress.map((event) => [event.stage, event.phase, event.itemId, event.completed, event.total, event.action]),
+    [
+      ["classify", "start", "7651879403881794866", 0, 1, "AI分类中：多模态"],
+      ["classify", "done", "7651879403881794866", 1, 1, "AI分类完成：minimax 多模态"]
+    ]
+  );
+});
+
+test("progress log lines round-trip with normalized timestamps", () => {
+  const line = formatProgressLogLine({
+    platformId: "douyin",
+    stage: "material",
+    phase: "fallback",
+    itemId: "7651879403881794866",
+    completed: 1,
+    total: 6,
+    action: "抖音图文素材使用浏览器兜底",
+    updatedAt: "2026-06-17T10:00:00.000Z"
+  });
+
+  assert.match(line, /^__HARVESTER_PROGRESS__\{/u);
+  assert.deepEqual(parseProgressLogLine(line), {
+    platformId: "douyin",
+    stage: "material",
+    phase: "fallback",
+    itemId: "7651879403881794866",
+    completed: 1,
+    total: 6,
+    action: "抖音图文素材使用浏览器兜底",
+    updatedAt: "2026-06-17T10:00:00.000Z"
+  });
+  assert.equal(parseProgressLogLine("普通日志"), null);
 });
 
 test("XHS current Feishu header omits the removed 图文/视频 Q column", () => {
@@ -690,6 +817,18 @@ test("tool checks use the correct version flag for ffmpeg and ffprobe", async ()
   assert.deepEqual(ytdlp, { ok: true, version: "2026.06.09" });
 });
 
+test("tool checks use ffmpeg version flags for packaged executable paths", async () => {
+  const ffmpeg = await defaultCommandExists(path.join("tools", "win32-x64", "ffmpeg.exe"), {
+    spawn: (command, args) => fakeVersionProcess({ command, args, okArgs: ["-version"], output: "ffmpeg version 8.1.1" })
+  });
+  const ffprobe = await defaultCommandExists(path.join("tools", "win32-x64", "ffprobe.exe"), {
+    spawn: (command, args) => fakeVersionProcess({ command, args, okArgs: ["-version"], output: "ffprobe version 8.1.1" })
+  });
+
+  assert.deepEqual(ffmpeg, { ok: true, version: "ffmpeg version 8.1.1" });
+  assert.deepEqual(ffprobe, { ok: true, version: "ffprobe version 8.1.1" });
+});
+
 test("media tools prefer packaged binaries before falling back to PATH commands", () => {
   const root = path.join(os.tmpdir(), "harvester-tools-test");
   const exists = () => true;
@@ -700,6 +839,22 @@ test("media tools prefer packaged binaries before falling back to PATH commands"
   assert.equal(resolveYtDlpCommand({ root, env: { MATERIAL_YTDLP_BIN: "/custom/yt-dlp" } }), "/custom/yt-dlp");
   assert.equal(resolveFfmpegCommand({ env: { FFMPEG_BIN: "/custom/ffmpeg" } }), "/custom/ffmpeg");
   assert.equal(resolveFfprobeCommand({ env: { FFPROBE_BIN: "/custom/ffprobe" } }), "/custom/ffprobe");
+});
+
+test("media artifact extractors use resolved packaged ffmpeg and ffprobe commands", async () => {
+  const files = [
+    path.join(process.cwd(), "src", "materials", "cache.mjs"),
+    path.join(process.cwd(), "src", "douyin-channel-type-classifier", "assets.mjs"),
+    path.join(process.cwd(), "src", "step15-douyin-assets.mjs")
+  ];
+  const sources = await Promise.all(files.map((file) => fs.readFile(file, "utf8")));
+  const combinedSource = sources.join("\n");
+
+  assert.doesNotMatch(combinedSource, /execFileAsync\(["']ffmpeg["']/u);
+  assert.doesNotMatch(combinedSource, /execFileAsync\(["']ffprobe["']/u);
+  assert.doesNotMatch(combinedSource, /runCommand\(["']ffmpeg["']/u);
+  assert.match(combinedSource, /resolveFfmpegCommand\(/u);
+  assert.match(combinedSource, /resolveFfprobeCommand\(/u);
 });
 
 test("material downloader runs the resolved local yt-dlp command", async () => {

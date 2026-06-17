@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import path from "node:path";
 
 import { loadDeepSeekConfig, loadMiniMaxConfig } from "./ai/content-classification.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
@@ -134,7 +135,7 @@ const COMMAND_VERSION_ARGS = {
 
 export function defaultCommandExists(command, { spawn = nodeSpawn } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, COMMAND_VERSION_ARGS[command] || ["--version"], {
+    const child = spawn(command, versionArgsForCommand(command), {
       stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";
@@ -153,6 +154,11 @@ export function defaultCommandExists(command, { spawn = nodeSpawn } = {}) {
       });
     });
   });
+}
+
+function versionArgsForCommand(command = "") {
+  const executableName = path.basename(String(command || "")).replace(/\.exe$/iu, "").toLowerCase();
+  return COMMAND_VERSION_ARGS[executableName] || ["--version"];
 }
 
 export function summarizeDeepSeekBalance(balanceInfos = []) {

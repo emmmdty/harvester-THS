@@ -7,6 +7,7 @@ import { dailySummaryPath, getPlatformConfig, resolvePlatformPaths } from "./pla
 import { classifyPlatformItems as defaultClassifyPlatformItems } from "./daily/classify-platform.mjs";
 import { cachePlatformMaterials as defaultCachePlatformMaterials } from "./materials/cache.mjs";
 import { shouldBlockFeishuWriteback } from "./materials/failure-gate.mjs";
+import { emitProgress } from "./progress-events.mjs";
 
 const NODE_BIN = process.execPath;
 
@@ -26,7 +27,8 @@ export async function collectDaily({
   classifyPlatformItems = defaultClassifyPlatformItems,
   writePlatformJsonToFeishu = defaultWritePlatformJsonToFeishu,
   openRiskLoginWindow = defaultOpenRiskLoginWindow,
-  log = console.log
+  log = console.log,
+  onProgress = null
 }) {
   sinceDate = sinceDate || targetDate;
   untilDate = untilDate || sinceDate;
@@ -61,7 +63,8 @@ export async function collectDaily({
         sinceDate,
         untilDate,
         root,
-        log
+        log,
+        onProgress
       });
       const gate = materialResult.gate || shouldBlockFeishuWriteback(materialResult.stats || {});
       const platformSummary = {
@@ -87,9 +90,21 @@ export async function collectDaily({
         platformId,
         items,
         materialResult,
-        log
+        log,
+        onProgress
       });
       if (!skipFeishu) {
+        emitProgress({
+          onProgress,
+          log,
+          logProgress: shouldLogProgress(process.env),
+          platformId,
+          stage: "feishu",
+          phase: "start",
+          completed: 0,
+          total: classifiedItems.length,
+          action: `${config.label}飞书写入中`
+        });
         client = client || createClient();
         const result = await writePlatformJsonToFeishu({
           platformId,
@@ -103,6 +118,17 @@ export async function collectDaily({
         platformSummary.status = gate.blocked ? "written_with_asset_failures" : "written";
         platformSummary.feishu = result.feishu;
         log(`${config.label} 飞书写入：新增 ${result.feishu.created}，更新 ${result.feishu.updated || 0}，跳过 ${result.feishu.skipped}`);
+        emitProgress({
+          onProgress,
+          log,
+          logProgress: shouldLogProgress(process.env),
+          platformId,
+          stage: "feishu",
+          phase: "done",
+          completed: classifiedItems.length,
+          total: classifiedItems.length,
+          action: `${config.label}飞书写入完成`
+        });
       } else {
         platformSummary.status = "classified";
       }
@@ -153,6 +179,10 @@ export async function collectDaily({
 
 function strictMaterialGateFromEnv(env = process.env) {
   return /^(1|true|yes|on)$/iu.test(String(env.STRICT_MATERIAL_GATE || env.MATERIAL_STRICT_GATE || "").trim());
+}
+
+function shouldLogProgress(env = process.env) {
+  return /^(1|true|yes|on)$/iu.test(String(env.HARVESTER_PROGRESS_LOGS || "").trim());
 }
 
 export async function defaultRunPlatformCrawler(platformId, sinceDate, untilDate, crawlMode, { root = process.cwd() } = {}) {
