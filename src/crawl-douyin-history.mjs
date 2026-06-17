@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 
-import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { chromiumLaunchOptions, resolveCrawlerHeadless } from "./browser-env.mjs";
 import { classifyContentType } from "./content-classifier.mjs";
 import {
   DOUYIN_HISTORY_HEADERS,
@@ -69,7 +69,7 @@ const MAX_HISTORY_DETAIL_FALLBACK = numberOption(
 const SCROLL_DELAY_MS = numberOption(OPTIONS.scrollDelayMs, process.env.HISTORY_SCROLL_DELAY_MS, 1800);
 const PAGE_DELAY_MS = numberOption(OPTIONS.pageDelayMs, process.env.HISTORY_PAGE_DELAY_MS, 1200);
 const STABLE_ROUNDS_LIMIT = numberOption(OPTIONS.stableRounds, process.env.HISTORY_STABLE_ROUNDS, 8);
-const HEADLESS = resolveHeadless();
+const HEADLESS = resolveCrawlerHeadless();
 
 async function main() {
   await fs.mkdir(RUNTIME_DIR, { recursive: true });

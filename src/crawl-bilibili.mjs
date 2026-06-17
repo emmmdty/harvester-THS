@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
-import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { chromiumLaunchOptions, resolveCrawlerHeadless } from "./browser-env.mjs";
 import { extractBilibiliTags, extractBilibiliTitle } from "./bilibili-detail-text.mjs";
 import { compareDateStrings, formatDate, normalizeDateInput } from "./date-utils.mjs";
 import { dateFromBilibiliEpoch, resolveBilibiliPublishedAt } from "./bilibili-published-date.mjs";
@@ -31,7 +31,7 @@ const MAX_DETAIL_PAGES = Number(process.env.BILIBILI_MAX_DETAIL_PAGES || 80);
 const OLD_ITEM_STOP_AFTER = Number(process.env.BILIBILI_OLD_ITEM_STOP_AFTER || 4);
 const SCROLL_DELAY = parseDelayRange(process.env.BILIBILI_SCROLL_DELAY || "1200-2500");
 const DETAIL_GAP_DELAY = parseDelayRange(process.env.BILIBILI_DETAIL_GAP_DELAY || "800-1800");
-const HEADLESS = resolveHeadless();
+const HEADLESS = resolveCrawlerHeadless();
 const BILIBILI_DETAIL_CACHE_VERSION = 3;
 
 async function main() {
@@ -47,47 +47,54 @@ async function main() {
     throw new Error("请先在账号配置中添加B站账号。");
   }
 
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    ...chromiumLaunchOptions(),
-    headless: HEADLESS,
-    viewport: { width: 1440, height: 1000 },
-    locale: "zh-CN",
-      timezoneId: "Asia/Shanghai"
-  });
-  const resourceBlocker = await installConservativeResourceBlocker(context, {
-    mode: CRAWL_MODE,
-    label: "B站轻量页面模式"
-  });
-
-  const listPage = await context.newPage();
-  const detailPage = await context.newPage();
-  listPage.setDefaultTimeout(20_000);
-  detailPage.setDefaultTimeout(20_000);
-
   const audit = createCrawlAudit("bilibili");
-  const detailCache = new DetailCache({
-    root: ROOT,
-    platformId: "bilibili",
-    enabled: shouldUseDetailCache({ mode: CRAWL_MODE }),
-    refresh: shouldRefreshDetailCache()
-  });
-
   const rows = [];
-  for (const account of accounts) {
-    const accountRows = await crawlAccountRecentFirst({
-      listPage,
-      detailPage,
-      account,
-      audit: audit.account(account.name),
-      detailCache,
-      resourceBlocker
+  let context = null;
+  let resourceBlocker = null;
+
+  try {
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+      ...chromiumLaunchOptions(),
+      headless: HEADLESS,
+      viewport: { width: 1440, height: 1000 },
+      locale: "zh-CN",
+      timezoneId: "Asia/Shanghai"
     });
-    rows.push(...accountRows);
-    console.log(`B站账号完成：${account.name}，命中 ${accountRows.length} 条`);
+    resourceBlocker = await installConservativeResourceBlocker(context, {
+      mode: CRAWL_MODE,
+      label: "B站轻量页面模式"
+    });
+
+    const listPage = await context.newPage();
+    const detailPage = await context.newPage();
+    listPage.setDefaultTimeout(20_000);
+    detailPage.setDefaultTimeout(20_000);
+
+    const detailCache = new DetailCache({
+      root: ROOT,
+      platformId: "bilibili",
+      enabled: shouldUseDetailCache({ mode: CRAWL_MODE }),
+      refresh: shouldRefreshDetailCache()
+    });
+
+    for (const account of accounts) {
+      const accountRows = await crawlAccountRecentFirst({
+        listPage,
+        detailPage,
+        account,
+        audit: audit.account(account.name),
+        detailCache,
+        resourceBlocker
+      });
+      rows.push(...accountRows);
+      console.log(`B站账号完成：${account.name}，命中 ${accountRows.length} 条`);
+    }
+  } finally {
+    await resourceBlocker?.close().catch(() => {});
+    await context?.close().catch(() => {});
   }
+
   logAuditSummary(audit);
-  await resourceBlocker.close();
-  await context.close();
   await writeOutputs(rows, { audit: audit.toJSON(), mode: CRAWL_MODE });
   console.log(`\nB站完成：导出 ${rows.length} 条`);
 }

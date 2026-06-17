@@ -12,7 +12,7 @@ const LOGIN_PROBES = {
     cookieUrl: "https://www.xiaohongshu.com",
     authCookieNames: ["web_session", "id_token"],
     loginPattern: /登录后查看更多|扫码登录|验证码登录|手机号登录|登录小红书|请登录|登录后查看/,
-    blockedPattern: /安全验证|安全限制|访问过于频繁|风控|滑块|系统繁忙|验证后继续|IP存在风险|存在风险|website-login\/error/
+    blockedPattern: /安全验证|安全限制|访问过于频繁|风控|滑块|系统繁忙|验证后继续|IP存在风险|存在风险|website-login\/(?:error|captcha)/
   },
   douyin: {
     label: "抖音",

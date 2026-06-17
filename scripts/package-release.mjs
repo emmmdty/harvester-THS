@@ -13,6 +13,7 @@ const REQUIRED_FILES = [
   "package-lock.json",
   "platform-accounts.json",
   "README.md",
+  "scripts/select-panel-port.mjs",
   "启动作品采集面板.command",
   "启动作品采集面板.cmd"
 ];
@@ -61,6 +62,7 @@ async function main() {
   console.log(`复制文件数：${copiedFiles}`);
   console.log(`包含 .env：${checks.hasEnv ? "是" : "否"}`);
   console.log(`包含启动脚本：${checks.hasLaunchers ? "是" : "否"}`);
+  console.log(`包含端口选择脚本：${checks.hasPanelPortSelector ? "是" : "否"}`);
   console.log(`包含 Prompt 维护文档：${checks.hasPromptDocs ? "是" : "否"}`);
   console.log(`排除运行产物：${checks.hasExcludedRuntime ? "失败" : "通过"}`);
 }
@@ -117,6 +119,7 @@ async function verifyPackageTree(packageDir) {
   return {
     hasEnv: pathSet.has(".env"),
     hasLaunchers: pathSet.has("启动作品采集面板.command") && pathSet.has("启动作品采集面板.cmd"),
+    hasPanelPortSelector: pathSet.has("scripts/select-panel-port.mjs"),
     hasPromptDocs: requiredPromptDocs.every((item) => pathSet.has(item)),
     hasExcludedRuntime: allPaths.some((item) => (
       item.startsWith(".git/")

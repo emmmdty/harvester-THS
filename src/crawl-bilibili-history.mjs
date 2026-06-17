@@ -19,7 +19,7 @@ import {
   writeBilibiliHistoryLedger,
   writeBilibiliHistoryOutputs
 } from "./bilibili-history.mjs";
-import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { chromiumLaunchOptions, resolveCrawlerHeadless } from "./browser-env.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
 import { extractBilibiliBv } from "./link-utils.mjs";
 import { readPlatformAccounts } from "./platform-accounts.mjs";
@@ -45,7 +45,7 @@ const WBI_MIXIN_KEY_ENC_TAB = [
 ];
 
 const OPTIONS = parseArgs(process.argv.slice(2));
-const HEADLESS = resolveHeadless();
+const HEADLESS = resolveCrawlerHeadless();
 const MAX_PAGES = numberOption(OPTIONS.maxPages, process.env.BILIBILI_HISTORY_MAX_PAGES, 0);
 const DETAIL_LIMIT = resolveDetailLimit(OPTIONS.detailLimit, process.env.BILIBILI_HISTORY_DETAIL_LIMIT);
 const PAGE_DELAY_MS = numberOption(OPTIONS.pageDelayMs, process.env.BILIBILI_HISTORY_PAGE_DELAY_MS, 550);

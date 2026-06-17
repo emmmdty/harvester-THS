@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { chromium } from "playwright";
 
-import { chromiumLaunchOptions, resolveHeadless } from "../browser-env.mjs";
+import { chromiumLaunchOptions, resolveCrawlerHeadless } from "../browser-env.mjs";
 import { getPlatformConfig } from "../platform-config.mjs";
 
 const DEFAULT_BROWSER_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -20,7 +21,6 @@ export async function captureBrowserVisualFallback({
   screenshotCount = 3,
   fetch = globalThis.fetch
 } = {}) {
-  const { chromium } = await import("playwright");
   const profileDir = path.join(root, getPlatformConfig(platformId).profileDirName);
   const context = await chromium.launchPersistentContext(profileDir, {
     ...chromiumLaunchOptions(),
@@ -90,13 +90,13 @@ export function classifyBrowserFallbackError(platformId = "", message = "") {
 function resolveMaterialFallbackHeadless(env = process.env) {
   const explicit = env.MATERIAL_BROWSER_FALLBACK_HEADLESS ?? env.MATERIAL_FALLBACK_HEADLESS ?? env.PLAYWRIGHT_HEADLESS;
   if (explicit !== undefined) return /^(1|true|yes)$/iu.test(String(explicit));
-  return resolveHeadless();
+  return resolveCrawlerHeadless(env);
 }
 
 function detectBrowserFallbackRisk({ platformId = "", pageUrl = "", bodyText = "" } = {}) {
   const text = `${pageUrl}\n${bodyText}`.slice(0, 20_000);
   if (platformId === "xhs") {
-    if (/website-login\/error|\/404\?|IP存在风险|安全验证|验证码|滑块|环境异常|访问频繁|请稍后再试|当前笔记暂时无法浏览|页面无法访问|内容不存在|笔记不存在/iu.test(text)) {
+    if (/website-login\/(?:error|captcha)|\/404\?|IP存在风险|安全验证|验证码|滑块|环境异常|访问频繁|请稍后再试|当前笔记暂时无法浏览|页面无法访问|内容不存在|笔记不存在/iu.test(text)) {
       return "页面风控/登录失效";
     }
     if (/登录后可查看|请先登录|扫码登录|密码登录|手机号登录/iu.test(text)) {

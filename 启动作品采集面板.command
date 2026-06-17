@@ -6,6 +6,8 @@ cd "$(dirname "$0")"
 LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)"
 NPM_REGISTRY="https://registry.npmmirror.com"
 PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
+PANEL_PORT_START="${PANEL_PORT_START:-3000}"
+PANEL_PORT_END="${PANEL_PORT_END:-3099}"
 
 fail() {
   echo
@@ -40,8 +42,8 @@ PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_DOWNLOAD_HOST" npx playwright install chro
 
 step "4/5 选择可用端口"
 PORT="$(
-  node -e 'const net = require("node:net"); const ports = Array.from({ length: 11 }, (_, index) => 3000 + index); function tryPort(index) { if (index >= ports.length) process.exit(1); const server = net.createServer(); server.once("error", () => tryPort(index + 1)); server.listen(ports[index], "0.0.0.0", () => { console.log(ports[index]); server.close(() => process.exit(0)); }); } tryPort(0);'
-)" || fail "3000-3010 端口都被占用，请先关闭其它面板或占用端口的程序。"
+  PANEL_PORT_START="$PANEL_PORT_START" PANEL_PORT_END="$PANEL_PORT_END" PANEL_HOST=0.0.0.0 node scripts/select-panel-port.mjs
+)" || fail "$PANEL_PORT_START-$PANEL_PORT_END 端口都被占用，请先关闭其它面板或占用端口的程序。"
 URL="http://127.0.0.1:$PORT/"
 echo "已选择端口：$PORT"
 

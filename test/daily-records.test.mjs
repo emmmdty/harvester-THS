@@ -3050,6 +3050,16 @@ test("login probe classifies valid, invalid, blocked, and unknown states", () =>
   });
 
   assert.deepEqual(classifyLoginProbe("xhs", {
+    title: "安全验证",
+    url: "https://www.xiaohongshu.com/website-login/captcha?verifyType=124",
+    cookies: [{ name: "id_token" }]
+  }), {
+    status: "blocked",
+    valid: false,
+    message: "页面疑似触发风控或安全验证，当前登录态不可直接用于采集。"
+  });
+
+  assert.deepEqual(classifyLoginProbe("xhs", {
     text: "登录小红书 发现更多精彩内容",
     cookies: []
   }), {

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 
-import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { chromiumLaunchOptions, resolveCrawlerHeadless } from "./browser-env.mjs";
 import { classifyContentType } from "./content-classifier.mjs";
 import { publishedDateFromXhsNoteId } from "./content-identity.mjs";
 import { installConservativeResourceBlocker, resolveCrawlMode } from "./crawl-runtime.mjs";
@@ -42,7 +42,7 @@ const BACKUP_DIR = path.join(RUNTIME_DIR, "backups");
 
 const OPTIONS = parseArgs(process.argv.slice(2));
 const CRAWL_MODE = resolveCrawlMode(OPTIONS);
-const HEADLESS = resolveHeadless();
+const HEADLESS = resolveCrawlerHeadless();
 const MAX_SCROLLS_PER_ACCOUNT = numberOption(OPTIONS.maxScrollsPerAccount, process.env.XHS_HISTORY_MAX_SCROLLS_PER_ACCOUNT, 260);
 const MAX_DETAIL_PAGES = numberOption(OPTIONS.maxDetailPages, process.env.XHS_HISTORY_MAX_DETAIL_PAGES, 500);
 const STABLE_ROUNDS_LIMIT = numberOption(OPTIONS.stableRounds, process.env.XHS_HISTORY_STABLE_ROUNDS, 6);
@@ -350,7 +350,8 @@ async function isLoginRequired(page) {
   const text = await page.locator("body").innerText({ timeout: 3000 }).catch(() => "");
   const url = page.url();
   return /登录后查看更多|扫码登录|验证码登录|手机号登录|登录小红书|请登录|登录后查看/.test(text)
-    || /\/login|login\?/.test(url);
+    || /安全验证|安全限制|访问过于频繁|风控|滑块|系统繁忙|验证后继续|IP存在风险|存在风险/.test(text)
+    || /website-login\/(?:error|captcha)|\/login|login\?/.test(url);
 }
 
 async function getPublishedNotesFromState(page) {

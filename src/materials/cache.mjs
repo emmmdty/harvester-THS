@@ -43,6 +43,7 @@ export async function cachePlatformMaterials({
   download = downloadMaterialWithYtDlp,
   captureFallbackMaterial = captureMaterialFallback,
   env = process.env,
+  fetch = globalThis.fetch,
   log = () => {}
 } = {}) {
   const normalizedItems = normalizePlatformItems(platformId, items);
@@ -86,7 +87,7 @@ export async function cachePlatformMaterials({
           log(`${getPlatformConfig(platformId).label}图文素材使用浏览器兜底：${item.id || item.link || item.title || "unknown"}`);
         }
         const materialResult = shouldTryBrowserFallbackAfterDownload({ platformId, item, result: downloadResult, browserFirst: prefersBrowserFallback })
-          ? await captureFallbackMaterial({ platformId, item, itemDir, root, previousResult: downloadResult, env, log })
+          ? await captureFallbackMaterial({ platformId, item, itemDir, root, previousResult: downloadResult, env, log, fetch })
           : downloadResult;
         const assets = normalizeAssets(materialResult.assets, itemDir);
         const enriched = await enrichMediaAssets({ assets, itemDir, log });

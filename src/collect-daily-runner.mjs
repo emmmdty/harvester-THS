@@ -25,6 +25,7 @@ export async function collectDaily({
   cachePlatformMaterials = defaultCachePlatformMaterials,
   classifyPlatformItems = defaultClassifyPlatformItems,
   writePlatformJsonToFeishu = defaultWritePlatformJsonToFeishu,
+  openRiskLoginWindow = defaultOpenRiskLoginWindow,
   log = console.log
 }) {
   sinceDate = sinceDate || targetDate;
@@ -107,20 +108,39 @@ export async function collectDaily({
       }
       summary.platforms[platformId] = platformSummary;
     } catch (error) {
-      summary.platforms[platformId] = {
+      const message = error.message || String(error);
+      const platformSummary = {
         status: "failed",
         collected: 0,
         feishu: null,
-        error: error.message || String(error)
+        error: message
       };
-      log(`${config.label} 失败：${error.message || String(error)}`);
+      if (isPlatformRiskStop(platformId, message)) {
+        platformSummary.status = "risk_stopped";
+        platformSummary.action = "login_window_open_failed";
+        const loginResult = await openRiskLoginWindow({ platformId, root, reason: message, log }).catch((loginError) => ({
+          ok: false,
+          error: loginError.message || String(loginError)
+        }));
+        if (loginResult?.ok) {
+          platformSummary.action = "login_window_opened";
+        } else {
+          platformSummary.loginWindowError = loginResult?.error || "登录窗口启动失败";
+        }
+        log(`${config.label} 触发登录/安全验证，已停止后台采集${platformSummary.action === "login_window_opened" ? "并打开登录窗口" : ""}：${message}`);
+      } else {
+        log(`${config.label} 失败：${message}`);
+      }
+      summary.platforms[platformId] = platformSummary;
     }
   }
 
-  const failedPlatforms = platforms.filter((platformId) => ["failed", "asset_blocked"].includes(summary.platforms[platformId]?.status));
+  const failedPlatforms = platforms.filter((platformId) => ["failed", "risk_stopped", "asset_blocked"].includes(summary.platforms[platformId]?.status));
   summary.ok = failedPlatforms.length === 0;
   if (failedPlatforms.length > 0) {
-    summary.partialFailureReason = failedPlatforms.some((platformId) => summary.platforms[platformId]?.status === "asset_blocked")
+    summary.partialFailureReason = failedPlatforms.some((platformId) => summary.platforms[platformId]?.status === "risk_stopped")
+      ? "部分平台触发登录或安全验证，已停止对应平台后台采集并打开登录窗口。"
+      : failedPlatforms.some((platformId) => summary.platforms[platformId]?.status === "asset_blocked")
       ? "部分平台素材获取失败达到阈值，已停止对应平台飞书回填并优先保留素材获取证据。"
       : "部分平台采集失败，成功平台已按日期写入飞书。";
     log(`\n每日采集存在失败平台：${failedPlatforms.map((id) => getPlatformConfig(id).label).join("、")}。成功平台已继续写入。`);
@@ -152,6 +172,30 @@ export async function defaultRunPlatformCrawler(platformId, sinceDate, untilDate
       FORCE_COLOR: "0"
     }
   });
+}
+
+export async function defaultOpenRiskLoginWindow({ platformId, root = process.cwd(), log = () => {} } = {}) {
+  const paths = resolvePlatformPaths(platformId, root);
+  if (!paths.loginScriptPath) return { ok: false, error: "没有可用登录脚本。" };
+  const child = spawn(NODE_BIN, [paths.loginScriptPath], {
+    ...riskLoginWindowSpawnOptions(root)
+  });
+  child.unref();
+  log(`${getPlatformConfig(platformId).label}登录窗口已打开，请完成验证后关闭窗口。`);
+  return { ok: true };
+}
+
+export function riskLoginWindowSpawnOptions(root = process.cwd()) {
+  return {
+    cwd: root,
+    detached: true,
+    stdio: "ignore"
+  };
+}
+
+function isPlatformRiskStop(platformId, message = "") {
+  if (platformId !== "xhs") return false;
+  return /登录状态已失效|安全验证|安全限制|验证码|风控|滑块|IP存在风险|存在风险|website-login\/(?:error|captcha)|\/login|login\?/iu.test(String(message || ""));
 }
 
 async function writeSummary(summary, root) {

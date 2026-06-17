@@ -15,6 +15,7 @@
     "history:crawl:bilibili": "node src/crawl-bilibili-history.mjs",
     "classify:douyin-channel-types": "node src/classify-douyin-channel-types.mjs",
     "classify:douyin-multimodal-tags": "node src/classify-douyin-channel-types.mjs --provider minimax --media-mode sampled-media",
+    "materials:cache-topn": "node src/cache-topn-materials.mjs",
     "collect:daily": "node src/collect-daily.mjs",
     "clean:daily": "node src/clean-daily.mjs",
     "eval:step15-policy": "node scripts/evaluate-step15-policy.mjs",

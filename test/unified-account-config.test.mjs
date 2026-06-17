@@ -63,13 +63,31 @@ test("double-click launch docs and scripts describe the all-platform panel", asy
   assert.match(readme, /默认按局域网模式启动/);
   assert.match(localCommand, /局域网模式/);
   assert.match(localCommand, /HOST=0\.0\.0\.0 npm run ui/);
-  assert.match(localCmd, /局域网模式/);
+  assert.match(localCmd, /LAN mode is enabled by default/);
   assert.match(localCmd, /set "HOST=0\.0\.0\.0"/);
   assert.match(localCmd, /chcp 65001 >nul/);
 
   await Promise.all(removedLaunchFiles.map(async (file) => {
     await assert.rejects(fs.stat(path.join(ROOT, file)), { code: "ENOENT" });
   }));
+});
+
+test("Windows double-click launcher avoids UTF-8 batch parsing and narrow port ranges", async () => {
+  const cmdBuffer = await fs.readFile(path.join(ROOT, "启动作品采集面板.cmd"));
+  const cmdText = cmdBuffer.toString("utf8");
+
+  assert.equal(/[^\x00-\x7F]/u.test(cmdText), false, "Windows cmd launcher should stay ASCII-only");
+  assert.equal(/(?<!\r)\n/u.test(cmdText), false, "Windows cmd launcher should keep CRLF line endings");
+  assert.match(cmdText, /scripts\\select-panel-port\.mjs/u);
+  assert.match(cmdText, /PANEL_PORT_END=3099/u);
+  assert.doesNotMatch(cmdText, /3000-3010|3000,3001/u);
+});
+
+test("panel port selector defaults to a wider fallback range", async () => {
+  const selector = await import(`file://${path.join(ROOT, "scripts", "select-panel-port.mjs")}`);
+
+  assert.equal(selector.DEFAULT_PANEL_PORT_START, 3000);
+  assert.equal(selector.DEFAULT_PANEL_PORT_END, 3099);
 });
 
 test("daily-facing docs and scripts do not expose one-off channel rebuild tools", async () => {

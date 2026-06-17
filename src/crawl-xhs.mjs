@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
-import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { chromiumLaunchOptions, resolveCrawlerHeadless } from "./browser-env.mjs";
 import { dateStringToDate, formatDate as formatDateInTimeZone } from "./date-utils.mjs";
 import { publishedDateFromXhsNoteId } from "./content-identity.mjs";
 import { classifyContentType } from "./content-classifier.mjs";
@@ -47,7 +47,7 @@ const DETAIL_READ_DELAY = parseDelayRange(process.env.XHS_DETAIL_READ_DELAY || "
 const DETAIL_GAP_DELAY = parseDelayRange(process.env.XHS_DETAIL_GAP_DELAY || "1500-4000");
 const BLOCKED_DETAIL_STOP_AFTER = Number(process.env.XHS_BLOCKED_DETAIL_STOP_AFTER || 2);
 const SCROLL_DELAY = parseDelayRange(process.env.XHS_SCROLL_DELAY || "1800-3500");
-const HEADLESS = resolveHeadless();
+const HEADLESS = resolveCrawlerHeadless();
 
 async function main() {
   if (SINCE > TODAY) {
@@ -64,51 +64,57 @@ async function main() {
     throw new Error("请先在账号配置中添加小红书账号。");
   }
 
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    ...chromiumLaunchOptions(),
-    headless: HEADLESS,
-    viewport: { width: 1440, height: 1000 },
-    locale: "zh-CN",
-      timezoneId: "Asia/Shanghai"
-  });
-  const resourceBlocker = await installConservativeResourceBlocker(context, {
-    mode: CRAWL_MODE,
-    label: "小红书轻量页面模式"
-  });
-
-  const listPage = await context.newPage();
-  const detailPage = await context.newPage();
-  listPage.setDefaultTimeout(20_000);
-  detailPage.setDefaultTimeout(20_000);
-
   const rows = [];
   const audit = createCrawlAudit("xhs");
-  const detailCache = new DetailCache({
-    root: ROOT,
-    platformId: "xhs",
-    enabled: shouldUseDetailCache({ mode: CRAWL_MODE }),
-    refresh: shouldRefreshDetailCache()
-  });
+  let context = null;
+  let resourceBlocker = null;
 
-  for (const account of accounts) {
-    console.log(`\n==> 处理账号：${account.name}`);
-    console.log(`账号主页：${account.url}`);
-    const accountRows = await crawlAccountRecentFirst({
-      listPage,
-      detailPage,
-      accountName: account.name,
-      profileUrl: account.url,
-      audit: audit.account(account.name),
-      detailCache,
-      resourceBlocker
+  try {
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+      ...chromiumLaunchOptions(),
+      headless: HEADLESS,
+      viewport: { width: 1440, height: 1000 },
+      locale: "zh-CN",
+      timezoneId: "Asia/Shanghai"
     });
-    rows.push(...accountRows);
-    console.log(`账号完成：${account.name}，命中 ${accountRows.length} 条`);
+    resourceBlocker = await installConservativeResourceBlocker(context, {
+      mode: CRAWL_MODE,
+      label: "小红书轻量页面模式"
+    });
+
+    const listPage = await context.newPage();
+    const detailPage = await context.newPage();
+    listPage.setDefaultTimeout(20_000);
+    detailPage.setDefaultTimeout(20_000);
+
+    const detailCache = new DetailCache({
+      root: ROOT,
+      platformId: "xhs",
+      enabled: shouldUseDetailCache({ mode: CRAWL_MODE }),
+      refresh: shouldRefreshDetailCache()
+    });
+
+    for (const account of accounts) {
+      console.log(`\n==> 处理账号：${account.name}`);
+      console.log(`账号主页：${account.url}`);
+      const accountRows = await crawlAccountRecentFirst({
+        listPage,
+        detailPage,
+        accountName: account.name,
+        profileUrl: account.url,
+        audit: audit.account(account.name),
+        detailCache,
+        resourceBlocker
+      });
+      rows.push(...accountRows);
+      console.log(`账号完成：${account.name}，命中 ${accountRows.length} 条`);
+    }
+  } finally {
+    await resourceBlocker?.close().catch(() => {});
+    await context?.close().catch(() => {});
   }
 
   logAuditSummary(audit);
-  await resourceBlocker.close();
-  await context.close();
   await writeOutputs(rows, { audit: audit.toJSON(), mode: CRAWL_MODE });
   console.log(`\n完成：导出 ${rows.length} 条`);
 }
@@ -318,7 +324,8 @@ async function isLoginRequired(page) {
   const text = await page.locator("body").innerText({ timeout: 3000 }).catch(() => "");
   const url = page.url();
   if (/登录后查看更多|扫码登录|验证码登录|手机号登录|登录小红书|请登录|登录后查看/.test(text)) return true;
-  if (/\/login|login\?/.test(url)) return true;
+  if (/安全验证|安全限制|访问过于频繁|风控|滑块|系统繁忙|验证后继续|IP存在风险|存在风险/.test(text)) return true;
+  if (/website-login\/(?:error|captcha)|\/login|login\?/.test(url)) return true;
   return false;
 }
 

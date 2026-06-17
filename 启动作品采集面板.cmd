@@ -2,10 +2,10 @@
 chcp 65001 >nul
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem 作品采集面板
-rem 支持：小红书、抖音、B站、全渠道
-rem 默认按局域网模式启动，账号范围来自 platform-accounts.json。
-rem 定时采集按全渠道执行。
+rem Work collection panel.
+rem Supports XHS, Douyin, Bilibili, and all-channel collection.
+rem LAN mode is enabled by default. Account scope comes from platform-accounts.json.
+rem Scheduled collection runs all channels.
 
 cd /d "%~dp0" || (
   echo Cannot enter the launcher directory.
@@ -13,6 +13,9 @@ cd /d "%~dp0" || (
   exit /b 1
 )
 set "HOST=0.0.0.0"
+set "PANEL_HOST=0.0.0.0"
+set "PANEL_PORT_START=3000"
+set "PANEL_PORT_END=3099"
 set "LAN_IP="
 set "NPM_REGISTRY=https://registry.npmmirror.com"
 set "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright"
@@ -55,11 +58,11 @@ if errorlevel 1 (
 echo.
 echo ==== 4/5 Select panel port ====
 set "PORT="
-for /f "delims=" %%P in ('node -e "const s=String.fromCharCode;const net=require(s(110,111,100,101,58,110,101,116));const ports=[3000,3001,3002,3003,3004,3005,3006,3007,3008,3009,3010];function check(i){if(i>=ports.length)process.exit(1);const server=net.createServer();server.once(s(101,114,114,111,114),()=>check(i+1));server.listen(ports[i],s(48,46,48,46,48,46,48),()=>{console.log(ports[i]);server.close(()=>process.exit(0));});}check(0);"') do (
+for /f "delims=" %%P in ('node scripts\select-panel-port.mjs 2^>nul') do (
   set "PORT=%%P"
 )
 if not defined PORT (
-  echo Ports 3000-3010 are already in use.
+  echo Ports %PANEL_PORT_START%-%PANEL_PORT_END% are already in use.
   goto :fail
 )
 set "URL=http://127.0.0.1:%PORT%/"
@@ -73,6 +76,8 @@ if defined LAN_IP set "LAN_IP=%LAN_IP: =%"
 echo.
 echo ==== 5/5 Start collection panel ====
 echo Starting panel for XHS, Douyin, Bilibili, and all-channel collection.
+echo LAN mode is enabled by default. Accounts come from platform-accounts.json.
+echo Scheduled collection runs all channels.
 echo Opened page: %URL%
 if defined LAN_IP (
   echo LAN URL: http://%LAN_IP%:%PORT%/

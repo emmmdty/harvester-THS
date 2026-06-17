@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
-import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { chromiumLaunchOptions, resolveCrawlerHeadless } from "./browser-env.mjs";
 import { dateStringToDate, formatDate as formatDateInTimeZone } from "./date-utils.mjs";
 import { publishedDateFromDouyinItemId } from "./content-identity.mjs";
 import {
@@ -48,7 +48,7 @@ const DETAIL_READ_DELAY = parseDelayRange(process.env.DOUYIN_DETAIL_READ_DELAY |
 const DETAIL_GAP_DELAY = parseDelayRange(process.env.DOUYIN_DETAIL_GAP_DELAY || "2000-5000");
 const SCROLL_DELAY = parseDelayRange(process.env.DOUYIN_SCROLL_DELAY || "2000-4000");
 const DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS = Number(process.env.DOUYIN_LIST_UNBLOCKED_RETRY_TIMEOUT_MS || 12_000);
-const HEADLESS = resolveHeadless();
+const HEADLESS = resolveCrawlerHeadless();
 const DOUYIN_DETAIL_CACHE_VERSION = 3;
 
 async function main() {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { collectDaily } from "../src/collect-daily-runner.mjs";
+import { collectDaily, riskLoginWindowSpawnOptions } from "../src/collect-daily-runner.mjs";
 import { dailySummaryPath, DAILY_PLATFORM_IDS, resolvePlatformPaths } from "../src/platform-config.mjs";
 
 const noOpMaterialCache = async () => ({
@@ -178,4 +178,52 @@ test("collectDaily records platform failures but still writes successful platfor
   assert.equal(summary.partialFailureReason, "部分平台采集失败，成功平台已按日期写入飞书。");
   assert.equal(summary.platforms.douyin.feishu.created, 1);
   assert.equal(summary.platforms.bilibili.feishu.created, 1);
+});
+
+test("collectDaily stops XHS on risk errors and opens the visible login window hook", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-daily-xhs-risk-"));
+  const calls = [];
+
+  const result = await collectDaily({
+    root,
+    targetDate: "2026-05-19",
+    platforms: ["xhs"],
+    skipFeishu: true,
+    crawlMode: "conservative",
+    runPlatformCrawler: async (platformId) => {
+      calls.push(`crawl:${platformId}`);
+      throw new Error("小红书登录状态已失效：website-login/captcha 安全验证");
+    },
+    readPlatformItems: async (platformId) => {
+      calls.push(`read:${platformId}`);
+      return [];
+    },
+    cachePlatformMaterials: async ({ platformId }) => {
+      calls.push(`materials:${platformId}`);
+      return noOpMaterialCache();
+    },
+    classifyPlatformItems: passThroughClassify,
+    writePlatformJsonToFeishu: async ({ platformId }) => {
+      calls.push(`write:${platformId}`);
+      return { collected: 0, feishu: { created: 0, skipped: 0 } };
+    },
+    openRiskLoginWindow: async ({ platformId, reason }) => {
+      calls.push(`login:${platformId}:${/安全验证/u.test(reason)}`);
+      return { ok: true };
+    },
+    log: () => {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls, ["crawl:xhs", "login:xhs:true"]);
+  assert.equal(result.summary.platforms.xhs.status, "risk_stopped");
+  assert.equal(result.summary.platforms.xhs.action, "login_window_opened");
+});
+
+test("risk login window is detached without keeping collection stdio open", () => {
+  assert.deepEqual(riskLoginWindowSpawnOptions("/tmp/harvester"), {
+    cwd: "/tmp/harvester",
+    detached: true,
+    stdio: "ignore"
+  });
 });

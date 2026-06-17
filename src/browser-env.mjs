@@ -15,6 +15,14 @@ export function resolveHeadless() {
   return false;
 }
 
+export function resolveCrawlerHeadless(env = process.env) {
+  const value = env.CRAWL_BROWSER_HEADLESS ?? env.CRAWL_HEADLESS ?? env.HEADLESS;
+  if (value !== undefined) {
+    return /^(1|true|yes)$/i.test(String(value));
+  }
+  return true;
+}
+
 export function chromiumLaunchOptions() {
   const args = [];
 

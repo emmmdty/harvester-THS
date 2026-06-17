@@ -278,8 +278,10 @@ test("release package includes prompt maintenance docs and still excludes runtim
   const packageScript = await fs.readFile(path.join(process.cwd(), "scripts", "package-release.mjs"), "utf8");
   const readme = await fs.readFile(path.join(process.cwd(), "README.md"), "utf8");
 
-  assert.match(packageScript, /const REQUIRED_DIRS = \[\s*"src",\s*"public",\s*"docs"\s*\]/u);
+  assert.match(packageScript, /"scripts\/select-panel-port\.mjs"/u);
   assert.match(packageScript, /hasPromptDocs: requiredPromptDocs\.every/u);
+  assert.match(packageScript, /hasPanelPortSelector: pathSet\.has\("scripts\/select-panel-port\.mjs"\)/u);
+  assert.match(packageScript, /包含端口选择脚本/u);
   assert.match(packageScript, /包含 Prompt 维护文档/u);
   assert.match(packageScript, /item\.startsWith\("output\/"\)/u);
   assert.match(packageScript, /item\.endsWith\("\/manifest\.json"\)/u);

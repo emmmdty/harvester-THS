@@ -655,6 +655,20 @@ test("material strict gate configuration is documented as opt-in", async () => {
   assert.match(maintenance, /STRICT_MATERIAL_GATE=1/u);
 });
 
+test("XHS material configuration stays on the original browser and yt-dlp path", async () => {
+  const envExample = await fs.readFile(path.join(process.cwd(), ".env.example"), "utf8");
+  const maintenance = await fs.readFile(path.join(process.cwd(), "docs", "developer-maintenance.md"), "utf8");
+  const packageJson = await fs.readFile(path.join(process.cwd(), "package.json"), "utf8");
+
+  assert.doesNotMatch(envExample, /XHS_DOWNLOADER|XHS_MATERIAL_PROVIDER|XHS_BROWSER_PROVIDER|patchright/iu);
+  assert.doesNotMatch(maintenance, /XHS-Downloader|Patchright|\/xhs\/detail/iu);
+  assert.doesNotMatch(packageJson, /patchright/iu);
+  assert.match(envExample, /^MATERIAL_BROWSER_FALLBACK_HEADLESS=1$/m);
+  assert.doesNotMatch(envExample, /^HEADLESS=1$/m);
+  assert.match(maintenance, /小红书图文优先走浏览器素材\/页面截图兜底/u);
+  assert.match(maintenance, /安全验证/u);
+});
+
 test("tool checks use the correct version flag for ffmpeg and ffprobe", async () => {
   const ffmpeg = await defaultCommandExists("ffmpeg", {
     spawn: (command, args) => fakeVersionProcess({ command, args, okArgs: ["-version"], output: "ffmpeg version 8.1.1" })
@@ -755,6 +769,57 @@ test("material downloader keeps partial yt-dlp assets for multimodal fallback", 
   assert.equal(result.ok, true);
   assert.match(result.error, /部分失败/u);
   assert.deepEqual(result.assets.map((asset) => asset.fileName), ["cover.jpg"]);
+});
+
+test("XHS material cache ignores removed sidecar env and keeps browser-first image-note fallback", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-original-material-"));
+  let downloadCalled = false;
+  let fallbackCalled = false;
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [
+      {
+        id: "image-note",
+        link: "https://www.xiaohongshu.com/discovery/item/image-note?xsec_token=fresh",
+        title: "小红书图文",
+        materialKind: "图文",
+        publishedAt: "2026-03-09"
+      }
+    ],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      downloadCalled = true;
+      return { ok: false, assets: [] };
+    },
+    captureFallbackMaterial: async ({ previousResult, itemDir }) => {
+      fallbackCalled = true;
+      assert.equal(previousResult.source, "browser-fallback");
+      assert.match(previousResult.error, /浏览器兜底/u);
+      const fileName = "browser.jpg";
+      await fs.writeFile(path.join(itemDir, fileName), "jpg");
+      return {
+        ok: true,
+        source: "browser-fallback",
+        fallbackReason: previousResult.error,
+        assets: [{ kind: "image", fileName }]
+      };
+    },
+    env: {
+      MATERIAL_EXPORT_PROFILE_COOKIES: "0",
+      XHS_DOWNLOADER_API_URL: "http://127.0.0.1:5556/xhs/detail",
+      XHS_DOWNLOADER_COOKIE: "web_session=test",
+      XHS_MATERIAL_PROVIDER: "xhs-downloader,browser,ytdlp"
+    },
+    log: () => {}
+  });
+
+  assert.equal(downloadCalled, false);
+  assert.equal(fallbackCalled, true);
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].source, "browser-fallback");
+  assert.equal(result.manifests[0].assets[0].fileName, "browser.jpg");
 });
 
 test("material cache stores multi-day manifests under each publish date directory", async () => {
@@ -1129,6 +1194,13 @@ test("XHS browser fallback treats inaccessible note pages as login or risk failu
     classifyBrowserFallbackError(
       "xhs",
       "https://www.xiaohongshu.com/404?error_msg=%E5%BD%93%E5%89%8D%E7%AC%94%E8%AE%B0%E6%9A%82%E6%97%B6%E6%97%A0%E6%B3%95%E6%B5%8F%E8%A7%88"
+    ),
+    "页面风控/登录失效"
+  );
+  assert.equal(
+    classifyBrowserFallbackError(
+      "xhs",
+      "https://www.xiaohongshu.com/website-login/captcha?verifyType=124"
     ),
     "页面风控/登录失效"
   );
