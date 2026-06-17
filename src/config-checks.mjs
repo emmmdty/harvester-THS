@@ -2,6 +2,11 @@ import { spawn as nodeSpawn } from "node:child_process";
 
 import { loadDeepSeekConfig, loadMiniMaxConfig } from "./ai/content-classification.mjs";
 import { FeishuSheetsClient, loadFeishuConfig } from "./feishu-sheets.mjs";
+import {
+  resolveFfmpegCommand,
+  resolveFfprobeCommand,
+  resolveYtDlpCommand
+} from "./media-tools.mjs";
 
 export async function runConfigChecks({
   env = process.env,
@@ -12,9 +17,9 @@ export async function runConfigChecks({
   checks.push(await checkFeishu({ env, fetch }));
   checks.push(await checkMiniMax({ env, fetch }));
   checks.push(await checkDeepSeek({ env, fetch }));
-  checks.push(await checkCommand("yt-dlp", commandExists));
-  checks.push(await checkCommand("ffmpeg", commandExists));
-  checks.push(await checkCommand("ffprobe", commandExists));
+  checks.push(await checkCommand("yt-dlp", resolveYtDlpCommand({ env }), commandExists));
+  checks.push(await checkCommand("ffmpeg", resolveFfmpegCommand({ env }), commandExists));
+  checks.push(await checkCommand("ffprobe", resolveFfprobeCommand({ env }), commandExists));
   checks.push(checkMaterialCookies(env));
   return {
     ok: checks.every((check) => check.status !== "fail"),
@@ -115,11 +120,11 @@ export function checkMaterialCookies(env = process.env) {
   return check("material-cookies", "ok", "素材下载会优先从本地浏览器登录目录临时导出 Cookie，不会在面板显示或长期保存。");
 }
 
-async function checkCommand(command, commandExists) {
+async function checkCommand(id, command, commandExists) {
   const result = await commandExists(command);
   return result.ok
-    ? check(command, "ok", `${command} 可用。${result.version ? `版本：${result.version}` : ""}`)
-    : check(command, "warn", `未检测到 ${command}；素材下载、抽帧或视频识别可能受影响。`);
+    ? check(id, "ok", `${id} 可用。${result.version ? `版本：${result.version}` : ""}`)
+    : check(id, "warn", `未检测到 ${id}；素材下载、抽帧或视频识别可能受影响。`);
 }
 
 const COMMAND_VERSION_ARGS = {

@@ -78,8 +78,12 @@ test("Windows double-click launcher avoids UTF-8 batch parsing and narrow port r
 
   assert.equal(/[^\x00-\x7F]/u.test(cmdText), false, "Windows cmd launcher should stay ASCII-only");
   assert.equal(/(?<!\r)\n/u.test(cmdText), false, "Windows cmd launcher should keep CRLF line endings");
+  assert.match(cmdText, /==== 1\/6 Check Node\.js and npm ====/u);
+  assert.match(cmdText, /==== 2\/6 Check runtime packages ====/u);
+  assert.match(cmdText, /node scripts\\ensure-media-tools\.mjs/u);
   assert.match(cmdText, /scripts\\select-panel-port\.mjs/u);
   assert.match(cmdText, /PANEL_PORT_END=3099/u);
+  assert.doesNotMatch(cmdText, /\d\/5/u);
   assert.doesNotMatch(cmdText, /3000-3010|3000,3001/u);
 });
 

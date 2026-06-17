@@ -18,6 +18,10 @@ import {
 } from "./browser-fallback.mjs";
 import { shouldBlockFeishuWriteback } from "./failure-gate.mjs";
 import { classifyTags } from "../tag-rules.mjs";
+import {
+  resolveFfmpegCommand,
+  resolveYtDlpCommand
+} from "../media-tools.mjs";
 
 const DEFAULT_YTDLP_FORMAT = "worstvideo*+bestaudio/worst/best";
 const DEFAULT_YTDLP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -155,6 +159,7 @@ export async function downloadMaterialWithYtDlp({
   downloadContext = {},
   env = process.env,
   run = runCommand,
+  resolveCommand = resolveYtDlpCommand,
   log = () => {}
 } = {}) {
   if (!item.link) return { ok: false, error: "缺少素材链接，无法下载。" };
@@ -165,7 +170,8 @@ export async function downloadMaterialWithYtDlp({
     env,
     cookiePath: downloadContext.cookiePath || ""
   });
-  const result = await run("yt-dlp", args, { cwd: itemDir });
+  const ytdlpCommand = resolveCommand({ root: env.HARVESTER_ROOT || process.cwd(), env });
+  const result = await run(ytdlpCommand, args, { cwd: itemDir });
   const assets = await collectDownloadedAssets(itemDir);
   if (result.code !== 0 && assets.length === 0) {
     log(`yt-dlp 下载失败：${item.link}：${result.stderr || result.stdout}`);
@@ -325,7 +331,7 @@ async function enrichMediaAssets({ assets = [], itemDir, log = () => {} } = {}) 
 
 async function extractVideoFrame({ videoPath, framePath, log = () => {} } = {}) {
   if (!videoPath || !framePath) return { ok: false, error: "缺少视频或抽帧路径。" };
-  const result = await runCommand("ffmpeg", [
+  const result = await runCommand(resolveFfmpegCommand(), [
     "-hide_banner",
     "-loglevel",
     "error",

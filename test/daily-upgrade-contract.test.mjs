@@ -28,6 +28,11 @@ import {
   downloadMaterialWithYtDlp,
   formatNetscapeCookies
 } from "../src/materials/cache.mjs";
+import {
+  resolveFfmpegCommand,
+  resolveFfprobeCommand,
+  resolveYtDlpCommand
+} from "../src/media-tools.mjs";
 import { detectXhsMaterialKind } from "../src/platforms/xhs/material-kind.mjs";
 import { checkMaterialCookies, defaultCommandExists } from "../src/config-checks.mjs";
 import { downloadExtractedMedia } from "../src/douyin-channel-type-classifier/assets.mjs";
@@ -683,6 +688,39 @@ test("tool checks use the correct version flag for ffmpeg and ffprobe", async ()
   assert.deepEqual(ffmpeg, { ok: true, version: "ffmpeg version 8.1.1" });
   assert.deepEqual(ffprobe, { ok: true, version: "ffprobe version 8.1.1" });
   assert.deepEqual(ytdlp, { ok: true, version: "2026.06.09" });
+});
+
+test("media tools prefer packaged binaries before falling back to PATH commands", () => {
+  const root = path.join(os.tmpdir(), "harvester-tools-test");
+  const exists = () => true;
+  assert.equal(resolveYtDlpCommand({ root, platform: "win32", arch: "x64", exists }), path.join(root, "tools", "win32-x64", "yt-dlp.exe"));
+  assert.equal(resolveYtDlpCommand({ root, platform: "darwin", arch: "x64", exists }), path.join(root, "tools", "darwin-x64", "yt-dlp"));
+  assert.equal(resolveFfmpegCommand({ root, platform: "darwin", arch: "x64", exists }), path.join(root, "tools", "darwin-x64", "ffmpeg"));
+  assert.equal(resolveFfprobeCommand({ root, platform: "darwin", arch: "x64", exists }), path.join(root, "tools", "darwin-x64", "ffprobe"));
+  assert.equal(resolveYtDlpCommand({ root, env: { MATERIAL_YTDLP_BIN: "/custom/yt-dlp" } }), "/custom/yt-dlp");
+  assert.equal(resolveFfmpegCommand({ env: { FFMPEG_BIN: "/custom/ffmpeg" } }), "/custom/ffmpeg");
+  assert.equal(resolveFfprobeCommand({ env: { FFPROBE_BIN: "/custom/ffprobe" } }), "/custom/ffprobe");
+});
+
+test("material downloader runs the resolved local yt-dlp command", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-local-ytdlp-"));
+  const expectedBin = path.join(root, "tools", `${process.platform}-${process.arch}`, process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
+  let commandSeen = "";
+
+  await downloadMaterialWithYtDlp({
+    platformId: "bilibili",
+    item: { link: "https://www.bilibili.com/video/BV1tNLA6hEQh/" },
+    itemDir: root,
+    downloadContext: { cookiePath: "" },
+    env: { HARVESTER_ROOT: root },
+    resolveCommand: () => expectedBin,
+    run: async (command) => {
+      commandSeen = command;
+      return { code: 1, stdout: "", stderr: "not downloaded" };
+    }
+  });
+
+  assert.equal(commandSeen, expectedBin);
 });
 
 test("config checks explain material cookie strategy without exposing secrets", () => {

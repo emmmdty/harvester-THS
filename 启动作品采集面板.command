@@ -23,13 +23,13 @@ step() {
   echo "==== $1 ===="
 }
 
-step "1/5 检查 Node.js 和 npm"
+step "1/6 检查 Node.js 和 npm"
 if ! command -v npm >/dev/null 2>&1; then
   fail "未找到 npm。请先安装 Node.js，并确认 npm 可以在终端中运行。"
 fi
 echo "npm 已就绪：$(npm --version)"
 
-step "2/5 检查运行组件"
+step "2/6 检查运行组件"
 if [ ! -d node_modules ]; then
   echo "第一次启动需要安装运行组件，可能需要几分钟，请不要关闭窗口。"
   npm ci --registry="$NPM_REGISTRY" || fail "运行组件安装失败。请检查网络，或把这个窗口截图发给技术同事。"
@@ -37,17 +37,20 @@ else
   echo "运行组件已存在，跳过安装。"
 fi
 
-step "3/5 检查浏览器组件"
+step "3/6 检查媒体工具"
+node scripts/ensure-media-tools.mjs || fail "媒体工具准备失败。请检查网络，或把这个窗口截图发给技术同事。"
+
+step "4/6 检查浏览器组件"
 PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_DOWNLOAD_HOST" npx playwright install chromium || fail "浏览器组件安装失败。请检查网络，或把这个窗口截图发给技术同事。"
 
-step "4/5 选择可用端口"
+step "5/6 选择可用端口"
 PORT="$(
   PANEL_PORT_START="$PANEL_PORT_START" PANEL_PORT_END="$PANEL_PORT_END" PANEL_HOST=0.0.0.0 node scripts/select-panel-port.mjs
 )" || fail "$PANEL_PORT_START-$PANEL_PORT_END 端口都被占用，请先关闭其它面板或占用端口的程序。"
 URL="http://127.0.0.1:$PORT/"
 echo "已选择端口：$PORT"
 
-step "5/5 启动作品采集面板"
+step "6/6 启动作品采集面板"
 echo "正在启动作品采集面板..."
 echo "支持：小红书、抖音、B站、全渠道"
 echo "默认按局域网模式启动，账号范围来自 platform-accounts.json。"

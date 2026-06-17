@@ -272,6 +272,8 @@ test("package exposes production check and cleanup dry-run scripts", async () =>
 
   assert.equal(pkg.scripts["prod:check"], "node src/prod-check.mjs");
   assert.equal(pkg.scripts["cleanup:dry-run"], "node src/cleanup-runtime.mjs");
+  assert.equal(pkg.dependencies["@ffmpeg-installer/ffmpeg"], "^1.1.0");
+  assert.equal(pkg.dependencies["@ffprobe-installer/ffprobe"], "^2.1.2");
 });
 
 test("release package includes prompt maintenance docs and still excludes runtime artifacts", async () => {
@@ -279,10 +281,17 @@ test("release package includes prompt maintenance docs and still excludes runtim
   const readme = await fs.readFile(path.join(process.cwd(), "README.md"), "utf8");
 
   assert.match(packageScript, /"scripts\/select-panel-port\.mjs"/u);
+  assert.match(packageScript, /"scripts\/ensure-media-tools\.mjs"/u);
   assert.match(packageScript, /hasPromptDocs: requiredPromptDocs\.every/u);
   assert.match(packageScript, /hasPanelPortSelector: pathSet\.has\("scripts\/select-panel-port\.mjs"\)/u);
+  assert.match(packageScript, /hasMediaToolBootstrap: pathSet\.has\("scripts\/ensure-media-tools\.mjs"\)/u);
+  assert.match(packageScript, /hasBundledMediaTools: \["darwin-x64", "win32-x64"\]\.every/u);
   assert.match(packageScript, /包含端口选择脚本/u);
+  assert.match(packageScript, /包含媒体工具准备脚本/u);
+  assert.match(packageScript, /包含本地媒体工具/u);
   assert.match(packageScript, /包含 Prompt 维护文档/u);
+  assert.match(packageScript, /assertPackageChecks\(checks\)/u);
+  assert.match(packageScript, /交付包校验失败/u);
   assert.match(packageScript, /item\.startsWith\("output\/"\)/u);
   assert.match(packageScript, /item\.endsWith\("\/manifest\.json"\)/u);
 
