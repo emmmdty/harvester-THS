@@ -64,6 +64,45 @@ test("production check passes when env, Feishu config, profiles, scheduler, and 
   assert.equal(result.checks.every((check) => check.status !== "fail"), true);
 });
 
+test("production check scans the same panel port range as the double-click launchers", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-prod-port-fallback-"));
+  await fs.writeFile(path.join(root, ".env"), "FEISHU_APP_ID=app\n", "utf8");
+  await fs.mkdir(path.join(root, ".xhs-profile"));
+  await fs.mkdir(path.join(root, ".douyin-profile"));
+  await fs.mkdir(path.join(root, ".bilibili-profile"));
+  await fs.mkdir(path.join(root, ".runtime"));
+  await fs.writeFile(path.join(root, ".runtime", "scheduler.json"), JSON.stringify({ enabled: false, time: "11:30" }), "utf8");
+  const attempts = [];
+
+  const result = await runProductionCheck({
+    root,
+    env: {
+      HOST: "0.0.0.0",
+      PANEL_PORT_START: "3000",
+      PANEL_PORT_END: "3002",
+      FEISHU_APP_ID: "app",
+      FEISHU_APP_SECRET: "secret",
+      FEISHU_SPREADSHEET_TOKEN: "sheet",
+      FEISHU_SHEET_DOUYIN: "douyin",
+      FEISHU_SHEET_XHS: "xhs",
+      FEISHU_SHEET_BILIBILI: "bilibili"
+    },
+    checkPort: async ({ host, port }) => {
+      attempts.push({ host, port });
+      return port === 3001
+        ? { id: "port", status: "ok", message: "端口 3001 可用。" }
+        : { id: "port", status: "fail", message: `端口 ${port} 不可用：EADDRINUSE` };
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(attempts, [
+    { host: "0.0.0.0", port: 3000 },
+    { host: "0.0.0.0", port: 3001 }
+  ]);
+  assert.equal(result.checks.find((check) => check.id === "port").message, "端口 3001 可用。");
+});
+
 test("runtime cleanup dry run includes generated artifacts and excludes browser profiles", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-cleanup-"));
   await fs.mkdir(path.join(root, "output", "feishu-backups"), { recursive: true });
@@ -285,7 +324,8 @@ test("release package includes prompt maintenance docs and still excludes runtim
   assert.match(packageScript, /hasPromptDocs: requiredPromptDocs\.every/u);
   assert.match(packageScript, /hasPanelPortSelector: pathSet\.has\("scripts\/select-panel-port\.mjs"\)/u);
   assert.match(packageScript, /hasMediaToolBootstrap: pathSet\.has\("scripts\/ensure-media-tools\.mjs"\)/u);
-  assert.match(packageScript, /hasBundledMediaTools: \["darwin-x64", "win32-x64"\]\.every/u);
+  assert.match(packageScript, /hasBundledMediaTools: REQUIRED_MEDIA_TOOL_PLATFORMS\.every/u);
+  assert.match(packageScript, /"darwin-arm64"/u);
   assert.match(packageScript, /包含端口选择脚本/u);
   assert.match(packageScript, /包含媒体工具准备脚本/u);
   assert.match(packageScript, /包含本地媒体工具/u);
@@ -296,6 +336,8 @@ test("release package includes prompt maintenance docs and still excludes runtim
   assert.match(packageScript, /item\.endsWith\("\/manifest\.json"\)/u);
 
   assert.match(readme, /Prompt 和分类维护资料随交付包提供/u);
+  assert.match(readme, /采集小红书、抖音、B站作品数据/u);
+  assert.doesNotMatch(readme, /交付口径|无感|无需改代码|无需命令行|零配置、零安装、零登录/u);
   assert.match(readme, /docs\/xhs-content-type-taxonomy\.md/u);
   assert.match(readme, /docs\/douyin-channel-type-taxonomy\.md/u);
   assert.match(readme, /docs\/bilibili-content-type-taxonomy\.md/u);

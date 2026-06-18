@@ -46,7 +46,10 @@ step "3/6 检查媒体工具"
 node scripts/ensure-media-tools.mjs || fail "媒体工具准备失败。请检查网络，或把这个窗口截图发给技术同事。"
 
 step "4/6 检查浏览器组件"
-npx playwright install chromium || fail "浏览器组件安装失败。请检查网络，或把这个窗口截图发给技术同事。"
+if ! npx playwright install chromium; then
+  echo "中国镜像安装失败，正在尝试官方源..."
+  PLAYWRIGHT_DOWNLOAD_HOST= npx playwright install chromium || fail "浏览器组件安装失败。请检查网络，或把这个窗口截图发给技术同事。"
+fi
 
 step "5/6 选择可用端口"
 PORT="$(

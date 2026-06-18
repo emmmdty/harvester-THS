@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { resolveCrawlerHeadless } from "../src/browser-env.mjs";
+import { activateChromiumWindow, resolveCrawlerHeadless } from "../src/browser-env.mjs";
 
 test("daily crawler entrypoints keep the original Playwright browser runtime", async () => {
   const root = process.cwd();
@@ -29,7 +29,7 @@ test("crawler browser sessions default to background mode while allowing explici
   assert.equal(resolveCrawlerHeadless({}), true);
   assert.equal(resolveCrawlerHeadless({ CRAWL_BROWSER_HEADLESS: "0" }), false);
   assert.equal(resolveCrawlerHeadless({ CRAWL_HEADLESS: "false" }), false);
-  assert.equal(resolveCrawlerHeadless({ HEADLESS: "0" }), false);
+  assert.equal(resolveCrawlerHeadless({ HEADLESS: "0" }), true);
   assert.equal(resolveCrawlerHeadless({ HEADLESS: "1" }), true);
 });
 
@@ -41,8 +41,15 @@ test("crawler entrypoints use crawler headless resolver but login entrypoints st
 
   assert.match(crawlXhs, /resolveCrawlerHeadless/u);
   assert.match(fallback, /resolveCrawlerHeadless/u);
+  assert.doesNotMatch(fallback, /PLAYWRIGHT_HEADLESS/u);
   assert.match(loginXhs, /resolveHeadless/u);
   assert.match(loginXhs, /headless:\s*false/u);
+  assert.match(loginXhs, /bringToFront/u);
+  assert.match(loginXhs, /activateChromiumWindow/u);
+});
+
+test("login window OS activation can be disabled explicitly", () => {
+  assert.equal(activateChromiumWindow({ LOGIN_WINDOW_ACTIVATE: "0" }), false);
 });
 
 test("double-click launchers only install Playwright runtime packages", async () => {
@@ -62,6 +69,9 @@ test("double-click launchers only install Playwright runtime packages", async ()
   assert.match(winLauncher, /set "PLAYWRIGHT_DOWNLOAD_HOST=https:\/\/npmmirror\.com\/mirrors\/playwright"/u);
   assert.match(macLauncher, /npx playwright install chromium/u);
   assert.match(winLauncher, /npx playwright install chromium/u);
+  assert.match(macLauncher, /PLAYWRIGHT_DOWNLOAD_HOST= npx playwright install chromium/u);
+  assert.match(winLauncher, /set "PLAYWRIGHT_DOWNLOAD_HOST="/u);
+  assert.match(winLauncher, /call npx playwright install chromium/u);
 });
 
 test("daily browser crawlers close browser contexts from failure paths", async () => {

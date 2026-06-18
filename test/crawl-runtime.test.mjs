@@ -138,6 +138,16 @@ test("crawlers count unknown dates only from authoritative platform date sources
   assert.match(crawlerFiles.bilibili, /if \(!detail\.publishedAt\) \{[\s\S]*audit\?\.recordUnknownDate\(\);/);
 });
 
+test("XHS crawler writes partial output before surfacing account risk stops", async () => {
+  const source = await fs.readFile(path.join(process.cwd(), "src", "crawl-xhs.mjs"), "utf8");
+
+  assert.match(source, /let pendingRiskError = null;/);
+  assert.match(source, /if \(!isXhsRiskStopError\(error\)\) throw error;/);
+  assert.match(source, /pendingRiskError = error;/);
+  assert.match(source, /await writeOutputs\(rows,[\s\S]*risk: pendingRiskError \?/);
+  assert.match(source, /if \(pendingRiskError\) throw pendingRiskError;/);
+});
+
 test("Douyin crawler supports a global detail check limit for verification runs", async () => {
   const source = await fs.readFile(path.join(process.cwd(), "src", "crawl-douyin.mjs"), "utf8");
 

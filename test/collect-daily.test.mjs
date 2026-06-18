@@ -220,6 +220,91 @@ test("collectDaily stops XHS on risk errors and opens the visible login window h
   assert.equal(result.summary.platforms.xhs.action, "login_window_opened");
 });
 
+test("collectDaily detects XHS risk text propagated from child process output", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-daily-xhs-child-risk-"));
+  const calls = [];
+
+  const result = await collectDaily({
+    root,
+    targetDate: "2026-05-19",
+    platforms: ["xhs"],
+    skipFeishu: true,
+    crawlMode: "conservative",
+    runPlatformCrawler: async () => {
+      throw new Error("src/crawl-xhs.mjs 退出码：1\n小红书登录状态已失效，请先在面板点击“打开登录”重新登录。");
+    },
+    readPlatformItems: async () => [],
+    cachePlatformMaterials: noOpMaterialCache,
+    classifyPlatformItems: passThroughClassify,
+    openRiskLoginWindow: async ({ platformId }) => {
+      calls.push(`login:${platformId}`);
+      return { ok: true };
+    },
+    log: () => {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls, ["login:xhs"]);
+  assert.equal(result.summary.platforms.xhs.status, "risk_stopped");
+});
+
+test("collectDaily writes partial XHS items collected before a later account risk stop", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-daily-xhs-partial-risk-"));
+  const calls = [];
+
+  const result = await collectDaily({
+    root,
+    targetDate: "2026-05-19",
+    platforms: ["xhs"],
+    skipFeishu: false,
+    crawlMode: "conservative",
+    createClient: () => ({ client: true }),
+    runPlatformCrawler: async () => {
+      calls.push("crawl:xhs");
+      throw new Error("src/crawl-xhs.mjs 退出码：1\n页面疑似触发安全验证或访问限制（账号：同花顺理财）");
+    },
+    readPlatformItems: async (platformId) => {
+      calls.push(`read:${platformId}`);
+      return [
+        { link: "xhs-before-risk-1", publishedAt: "2026-05-19" },
+        { link: "xhs-before-risk-2", publishedAt: "2026-05-19" },
+        { link: "xhs-before-risk-3", publishedAt: "2026-05-19" }
+      ];
+    },
+    cachePlatformMaterials: async ({ platformId, items }) => {
+      calls.push(`materials:${platformId}:${items.length}`);
+      return { manifests: [], stats: { total: items.length, failed: 0, consecutiveFailures: 0 } };
+    },
+    classifyPlatformItems: async ({ platformId, items }) => {
+      calls.push(`classify:${platformId}:${items.length}`);
+      return items;
+    },
+    writePlatformJsonToFeishu: async ({ platformId, items }) => {
+      calls.push(`write:${platformId}:${items.length}`);
+      return { collected: items.length, feishu: { total: items.length, created: 3, updated: 0, skipped: 0 } };
+    },
+    openRiskLoginWindow: async ({ platformId }) => {
+      calls.push(`login:${platformId}`);
+      return { ok: true };
+    },
+    log: () => {}
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls, [
+    "crawl:xhs",
+    "login:xhs",
+    "read:xhs",
+    "materials:xhs:3",
+    "classify:xhs:3",
+    "write:xhs:3"
+  ]);
+  assert.equal(result.summary.platforms.xhs.status, "written_with_risk_stop");
+  assert.equal(result.summary.platforms.xhs.collected, 3);
+  assert.equal(result.summary.platforms.xhs.action, "login_window_opened");
+  assert.equal(result.summary.platforms.xhs.feishu.created, 3);
+});
+
 test("risk login window is detached without keeping collection stdio open", () => {
   assert.deepEqual(riskLoginWindowSpawnOptions("/tmp/harvester"), {
     cwd: "/tmp/harvester",

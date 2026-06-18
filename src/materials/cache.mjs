@@ -87,7 +87,39 @@ export async function cachePlatformMaterials({
       const id = safePathSegment(item.id || item.bvid || item.noteId || item.itemId || item.link || `item-${manifests.length + 1}`);
       const itemDir = path.join(platformDir, id);
       await fs.mkdir(itemDir, { recursive: true });
+      const manifestPath = path.join(itemDir, "manifest.json");
       let manifest = baseManifest({ platformId, item, itemDir });
+      const reusable = await loadReusableMaterialManifest({ manifestPath, platformId, itemDir, env });
+      if (reusable) {
+        manifest = {
+          ...manifest,
+          ...reusable.manifest,
+          reused: true,
+          reuseReason: reusable.reason
+        };
+        log(`${getPlatformConfig(platformId).label}素材复用已有 manifest：${manifest.id || manifest.link || manifest.title || "unknown"}（${reusable.reason}）。`);
+        if (!manifest.ok) {
+          failed += 1;
+          consecutiveFailures += 1;
+          maxConsecutiveFailures = Math.max(maxConsecutiveFailures, consecutiveFailures);
+        } else {
+          consecutiveFailures = 0;
+        }
+        emitProgress({
+          onProgress,
+          log,
+          logProgress: shouldLogProgress(env),
+          platformId,
+          stage: "material",
+          phase: "manifest",
+          itemId: progressItemId,
+          completed: itemIndex + 1,
+          total: normalizedItems.length,
+          action: `${getPlatformConfig(platformId).label}素材 manifest 已复用`
+        });
+        manifests.push(manifest);
+        continue;
+      }
       try {
         emitProgress({
           onProgress,
@@ -162,7 +194,13 @@ export async function cachePlatformMaterials({
       } else {
         consecutiveFailures = 0;
       }
-      await fs.writeFile(path.join(itemDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+      const timestamp = new Date().toISOString();
+      manifest = {
+        ...manifest,
+        createdAt: manifest.createdAt || timestamp,
+        updatedAt: timestamp
+      };
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
       log(`${getPlatformConfig(platformId).label}素材完成：${manifest.id || manifest.link || manifest.title || "unknown"}，manifest 已写入。`);
       emitProgress({
         onProgress,
@@ -438,6 +476,46 @@ function baseManifest({ platformId, item, itemDir }) {
     error: "",
     assets: []
   };
+}
+
+async function loadReusableMaterialManifest({ manifestPath, platformId = "", itemDir = "", env = process.env } = {}) {
+  const manifest = await readManifest(manifestPath);
+  if (!manifest) return null;
+  if (manifest.ok && hasReusableAssets(manifest, itemDir)) {
+    return { manifest, reason: "已有可用素材" };
+  }
+  if (platformId === "xhs" && shouldReuseXhsRiskFailureManifest(manifest, env)) {
+    return { manifest, reason: "小红书登录/风控冷却期内跳过重复访问" };
+  }
+  return null;
+}
+
+async function readManifest(manifestPath) {
+  try {
+    return JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function hasReusableAssets(manifest = {}, itemDir = "") {
+  const paths = [
+    ...(manifest.assets || []).map((asset) => asset.path || (asset.fileName ? path.join(itemDir, asset.fileName) : "")),
+    ...(manifest.imagePaths || []),
+    ...(manifest.framePaths || []),
+    manifest.videoPath || ""
+  ].filter(Boolean);
+  return paths.length > 0 && paths.some((filePath) => existsSync(filePath));
+}
+
+function shouldReuseXhsRiskFailureManifest(manifest = {}, env = process.env) {
+  const ttlMs = Number(env.XHS_MATERIAL_RISK_RETRY_COOLDOWN_MS || 30 * 60 * 1000);
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return false;
+  const text = `${manifest.error || ""}\n${manifest.fallbackReason || ""}\n${manifest.fallback?.riskReason || ""}`;
+  if (!/页面风控|登录失效|安全验证|访问限制|访问频繁|website-login\/(?:error|captcha)/iu.test(text)) return false;
+  const updatedAt = Date.parse(manifest.updatedAt || manifest.finishedAt || manifest.createdAt || "");
+  if (!Number.isFinite(updatedAt)) return false;
+  return Date.now() - updatedAt < ttlMs;
 }
 
 function shouldPreferBrowserFallback({ platformId = "", item = {} } = {}) {

@@ -47,7 +47,10 @@ const DETAIL_READ_DELAY = parseDelayRange(process.env.XHS_DETAIL_READ_DELAY || "
 const DETAIL_GAP_DELAY = parseDelayRange(process.env.XHS_DETAIL_GAP_DELAY || "1500-4000");
 const BLOCKED_DETAIL_STOP_AFTER = Number(process.env.XHS_BLOCKED_DETAIL_STOP_AFTER || 2);
 const SCROLL_DELAY = parseDelayRange(process.env.XHS_SCROLL_DELAY || "1800-3500");
+const PROFILE_SWITCH_GAP_DELAY = parseDelayRange(process.env.XHS_PROFILE_SWITCH_GAP_DELAY || "12000-30000");
 const HEADLESS = resolveCrawlerHeadless();
+const XHS_RISK_PATTERN = /安全验证|安全限制|访问过于频繁|访问频繁|风控|滑块|系统繁忙|验证后继续|IP存在风险|存在风险|环境异常|当前操作异常|website-login\/(?:error|captcha)|\/login|login\?/iu;
+const XHS_LOGIN_PATTERN = /登录后查看更多|扫码登录|验证码登录|手机号登录|登录小红书|请登录|登录后查看/iu;
 
 async function main() {
   if (SINCE > TODAY) {
@@ -68,6 +71,7 @@ async function main() {
   const audit = createCrawlAudit("xhs");
   let context = null;
   let resourceBlocker = null;
+  let pendingRiskError = null;
 
   try {
     context = await chromium.launchPersistentContext(USER_DATA_DIR, {
@@ -94,20 +98,31 @@ async function main() {
       refresh: shouldRefreshDetailCache()
     });
 
-    for (const account of accounts) {
+    for (let accountIndex = 0; accountIndex < accounts.length; accountIndex += 1) {
+      const account = accounts[accountIndex];
+      if (accountIndex > 0) await waitRandom(listPage, PROFILE_SWITCH_GAP_DELAY, "账号切换间隔");
       console.log(`\n==> 处理账号：${account.name}`);
       console.log(`账号主页：${account.url}`);
-      const accountRows = await crawlAccountRecentFirst({
-        listPage,
-        detailPage,
-        accountName: account.name,
-        profileUrl: account.url,
-        audit: audit.account(account.name),
-        detailCache,
-        resourceBlocker
-      });
-      rows.push(...accountRows);
-      console.log(`账号完成：${account.name}，命中 ${accountRows.length} 条`);
+      const accountAudit = audit.account(account.name);
+      try {
+        const accountRows = await crawlAccountRecentFirst({
+          listPage,
+          detailPage,
+          accountName: account.name,
+          profileUrl: account.url,
+          audit: accountAudit,
+          detailCache,
+          resourceBlocker
+        });
+        rows.push(...accountRows);
+        console.log(`账号完成：${account.name}，命中 ${accountRows.length} 条`);
+      } catch (error) {
+        if (!isXhsRiskStopError(error)) throw error;
+        accountAudit.stop("risk-stop");
+        pendingRiskError = error;
+        console.warn(`账号触发登录/安全验证，停止后续小红书后台采集并保留已采集结果：${error.message || String(error)}`);
+        break;
+      }
     }
   } finally {
     await resourceBlocker?.close().catch(() => {});
@@ -115,15 +130,24 @@ async function main() {
   }
 
   logAuditSummary(audit);
-  await writeOutputs(rows, { audit: audit.toJSON(), mode: CRAWL_MODE });
+  await writeOutputs(rows, {
+    audit: audit.toJSON(),
+    mode: CRAWL_MODE,
+    risk: pendingRiskError ? {
+      stopped: true,
+      message: pendingRiskError.message || String(pendingRiskError)
+    } : null
+  });
   console.log(`\n完成：导出 ${rows.length} 条`);
+  if (pendingRiskError) throw pendingRiskError;
 }
 
 async function crawlAccountRecentFirst({ listPage, detailPage, accountName, profileUrl, audit, detailCache, resourceBlocker }) {
   await listPage.goto(profileUrl, { waitUntil: "domcontentloaded" });
   await waitForProfileNotes(listPage);
-  if (await isLoginRequired(listPage)) {
-    throw new Error("小红书登录状态已失效，请先在面板点击“打开登录”重新登录，登录成功后关闭登录浏览器，再开始爬取。");
+  const profileRisk = await detectXhsPageRisk(listPage);
+  if (profileRisk) {
+    throw new Error(xhsRiskErrorMessage(profileRisk, accountName));
   }
 
   const rows = [];
@@ -146,8 +170,9 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
     const newLinks = stateLinks.filter((link) => !seen.has(link.id));
     console.log(`页面状态发布作品：${stateLinks.length} 条，新作品：${newLinks.length} 条`);
     if (stateLinks.length === 0) {
-      if (await isLoginRequired(listPage)) {
-        throw new Error("小红书登录状态已失效，请先重新登录。");
+      const emptyListRisk = await detectXhsPageRisk(listPage);
+      if (emptyListRisk) {
+        throw new Error(xhsRiskErrorMessage(emptyListRisk, accountName));
       }
       const title = await listPage.title().catch(() => "");
       console.warn(`未读到账号作品状态：${accountName} title="${title}" url=${listPage.url()}`);
@@ -219,10 +244,11 @@ async function crawlAccountRecentFirst({ listPage, detailPage, accountName, prof
       const risk = detailRiskGuard.record(detail);
       if (detail.blocked) {
         audit?.recordSkipped("detail-blocked");
-        console.warn(`详情页触发风控或不可浏览：${link.exportUrl} stateTime=${link.stateTimeValue ?? ""}`);
-        if (risk.shouldStop) {
+        const detailRiskReason = detail.riskReason || "详情页触发风控或不可浏览";
+        console.warn(`${detailRiskReason}：${link.exportUrl} stateTime=${link.stateTimeValue ?? ""}`);
+        if (detail.hardRisk || risk.shouldStop) {
           stop("detail-blocked");
-          throw new Error(`小红书账号 ${accountName} 连续 ${risk.consecutiveBlocked} 次详情页触发风控，已停止该账号详情访问。`);
+          throw new Error(`小红书账号 ${accountName} ${detail.hardRisk ? detailRiskReason : `连续 ${risk.consecutiveBlocked} 次详情页触发风控`}，已停止该账号详情访问。`);
         }
         continue;
       }
@@ -320,13 +346,13 @@ async function waitForProfileNotes(page) {
   await page.waitForTimeout(1000);
 }
 
-async function isLoginRequired(page) {
+async function detectXhsPageRisk(page) {
   const text = await page.locator("body").innerText({ timeout: 3000 }).catch(() => "");
   const url = page.url();
-  if (/登录后查看更多|扫码登录|验证码登录|手机号登录|登录小红书|请登录|登录后查看/.test(text)) return true;
-  if (/安全验证|安全限制|访问过于频繁|风控|滑块|系统繁忙|验证后继续|IP存在风险|存在风险/.test(text)) return true;
-  if (/website-login\/(?:error|captcha)|\/login|login\?/.test(url)) return true;
-  return false;
+  const combined = `${url}\n${decodeUrlText(url)}\n${text}`;
+  if (XHS_RISK_PATTERN.test(combined)) return "页面疑似触发安全验证或访问限制";
+  if (XHS_LOGIN_PATTERN.test(combined)) return "小红书登录状态已失效";
+  return "";
 }
 
 async function getPublishedNotesFromState(page) {
@@ -406,8 +432,19 @@ async function scrapeNoteDetailOnce(page, noteUrl) {
 
 async function scrapeNoteDetailFromPage(page) {
   const bodyText = await page.locator("body").innerText({ timeout: 10_000 }).catch(() => "");
+  const pageUrl = page.url();
+  const riskText = `${pageUrl}\n${decodeUrlText(pageUrl)}\n${bodyText}`;
+  if (XHS_RISK_PATTERN.test(riskText) || XHS_LOGIN_PATTERN.test(riskText)) {
+    return {
+      tags: "",
+      publishedAt: null,
+      blocked: true,
+      hardRisk: true,
+      riskReason: XHS_LOGIN_PATTERN.test(riskText) ? "小红书登录状态已失效" : "详情页触发安全验证或访问限制"
+    };
+  }
   if (/当前笔记暂时无法浏览|请打开小红书App扫码查看|页面无法浏览/.test(bodyText)) {
-    return { tags: "", publishedAt: null, blocked: true };
+    return { tags: "", publishedAt: null, blocked: true, hardRisk: false, riskReason: "详情页不可浏览" };
   }
 
   const tags = extractTags(bodyText);
@@ -424,6 +461,24 @@ async function scrapeNoteDetailFromPage(page) {
     publishedAtSource: publishedAtResult.source,
     dateCandidates: publishedAtResult.candidates.join(" | ")
   };
+}
+
+function xhsRiskErrorMessage(reason, accountName = "") {
+  const accountText = accountName ? `（账号：${accountName}）` : "";
+  return `${reason}${accountText}，请先在面板点击“打开登录”重新登录或完成安全验证，登录成功后关闭登录浏览器，再开始爬取。`;
+}
+
+function decodeUrlText(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
+}
+
+function isXhsRiskStopError(error) {
+  const message = error?.message || String(error || "");
+  return XHS_RISK_PATTERN.test(message) || XHS_LOGIN_PATTERN.test(message);
 }
 
 async function readDetailDateTexts(page) {
@@ -452,7 +507,7 @@ function extractTags(text) {
   return [...new Set(matches)].join(" ");
 }
 
-async function writeOutputs(rows, { accountName = "", audit = null, mode = "conservative" } = {}) {
+async function writeOutputs(rows, { accountName = "", audit = null, mode = "conservative", risk = null } = {}) {
   const baseName = buildXhsOutputBaseName({
     since: formatDate(SINCE),
     until: formatDate(TODAY),
@@ -490,6 +545,7 @@ async function writeOutputs(rows, { accountName = "", audit = null, mode = "cons
     since: formatDate(SINCE),
     until: formatDate(TODAY),
     audit,
+    risk,
     items: rows.map((row) => ({
       platform: "xhs",
       accountName: row.accountName,

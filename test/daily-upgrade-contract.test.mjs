@@ -919,8 +919,11 @@ test("media tools prefer packaged binaries before falling back to PATH commands"
   const exists = () => true;
   assert.equal(resolveYtDlpCommand({ root, platform: "win32", arch: "x64", exists }), path.join(root, "tools", "win32-x64", "yt-dlp.exe"));
   assert.equal(resolveYtDlpCommand({ root, platform: "darwin", arch: "x64", exists }), path.join(root, "tools", "darwin-x64", "yt-dlp"));
+  assert.equal(resolveYtDlpCommand({ root, platform: "darwin", arch: "arm64", exists }), path.join(root, "tools", "darwin-arm64", "yt-dlp"));
   assert.equal(resolveFfmpegCommand({ root, platform: "darwin", arch: "x64", exists }), path.join(root, "tools", "darwin-x64", "ffmpeg"));
+  assert.equal(resolveFfmpegCommand({ root, platform: "darwin", arch: "arm64", exists }), path.join(root, "tools", "darwin-arm64", "ffmpeg"));
   assert.equal(resolveFfprobeCommand({ root, platform: "darwin", arch: "x64", exists }), path.join(root, "tools", "darwin-x64", "ffprobe"));
+  assert.equal(resolveFfprobeCommand({ root, platform: "darwin", arch: "arm64", exists }), path.join(root, "tools", "darwin-arm64", "ffprobe"));
   assert.equal(resolveYtDlpCommand({ root, env: { MATERIAL_YTDLP_BIN: "/custom/yt-dlp" } }), "/custom/yt-dlp");
   assert.equal(resolveFfmpegCommand({ env: { FFMPEG_BIN: "/custom/ffmpeg" } }), "/custom/ffmpeg");
   assert.equal(resolveFfprobeCommand({ env: { FFPROBE_BIN: "/custom/ffprobe" } }), "/custom/ffprobe");
@@ -1238,6 +1241,49 @@ test("XHS image-note material cache uses browser fallback before yt-dlp", async 
   assert.equal(logs.some((line) => /小红书图文素材使用浏览器兜底/u.test(line)), true);
 });
 
+test("XHS material cache reuses existing browser fallback assets without reopening pages", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-reuse-success-"));
+  const itemDir = path.join(root, "output", "2026-03-09", "xhs", "reuse-note");
+  await fs.mkdir(itemDir, { recursive: true });
+  await fs.writeFile(path.join(itemDir, "browser.jpg"), "jpg", "utf8");
+  await fs.writeFile(path.join(itemDir, "manifest.json"), JSON.stringify({
+    platformId: "xhs",
+    id: "reuse-note",
+    link: "https://www.xiaohongshu.com/discovery/item/reuse-note",
+    title: "已缓存图文",
+    publishedAt: "2026-03-09",
+    ok: true,
+    source: "browser-fallback",
+    assets: [{ kind: "image", fileName: "browser.jpg" }]
+  }), "utf8");
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [{
+      id: "reuse-note",
+      link: "https://www.xiaohongshu.com/discovery/item/reuse-note",
+      title: "已缓存图文",
+      materialKind: "图文",
+      publishedAt: "2026-03-09"
+    }],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      throw new Error("should not run downloader for reusable material");
+    },
+    captureFallbackMaterial: async () => {
+      throw new Error("should not reopen browser fallback for reusable material");
+    },
+    env: { MATERIAL_EXPORT_PROFILE_COOKIES: "0" },
+    log: () => {}
+  });
+
+  assert.equal(result.stats.failed, 0);
+  assert.equal(result.manifests[0].ok, true);
+  assert.equal(result.manifests[0].reused, true);
+  assert.match(result.manifests[0].reuseReason, /已有可用素材/u);
+});
+
 test("XHS daily JSON contentType image notes use browser fallback before yt-dlp", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-content-type-browser-first-"));
   let downloadCalled = false;
@@ -1465,6 +1511,54 @@ test("XHS image-note browser fallback failure writes rerunnable failure manifest
   assert.match(manifest.error, /未找到图片资源/u);
   assert.equal(logs.some((line) => /小红书浏览器兜底失败/u.test(line)), true);
   assert.equal(logs.some((line) => /后续重跑可重新抓取/u.test(line)), true);
+});
+
+test("XHS material cache cools down recent login or risk fallback failures", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-risk-cooldown-"));
+  const itemDir = path.join(root, "output", "2026-03-09", "xhs", "risk-note");
+  await fs.mkdir(itemDir, { recursive: true });
+  await fs.writeFile(path.join(itemDir, "manifest.json"), JSON.stringify({
+    platformId: "xhs",
+    id: "risk-note",
+    link: "https://www.xiaohongshu.com/discovery/item/risk-note",
+    title: "风控图文",
+    publishedAt: "2026-03-09",
+    ok: false,
+    source: "browser-fallback",
+    error: "小红书浏览器兜底失败：页面风控/登录失效。",
+    fallback: { kind: "xhs-browser-visual", riskReason: "页面风控/登录失效" },
+    updatedAt: new Date().toISOString(),
+    assets: []
+  }), "utf8");
+
+  const result = await cachePlatformMaterials({
+    platformId: "xhs",
+    items: [{
+      id: "risk-note",
+      link: "https://www.xiaohongshu.com/discovery/item/risk-note",
+      title: "风控图文",
+      materialKind: "图文",
+      publishedAt: "2026-03-09"
+    }],
+    targetDate: "2026-03-09",
+    root,
+    download: async () => {
+      throw new Error("should not run downloader during XHS risk cooldown");
+    },
+    captureFallbackMaterial: async () => {
+      throw new Error("should not reopen browser during XHS risk cooldown");
+    },
+    env: {
+      MATERIAL_EXPORT_PROFILE_COOKIES: "0",
+      XHS_MATERIAL_RISK_RETRY_COOLDOWN_MS: String(60 * 60 * 1000)
+    },
+    log: () => {}
+  });
+
+  assert.equal(result.stats.failed, 1);
+  assert.equal(result.manifests[0].ok, false);
+  assert.equal(result.manifests[0].reused, true);
+  assert.match(result.manifests[0].reuseReason, /风控冷却期/u);
 });
 
 test("XHS browser fallback treats inaccessible note pages as login or risk failures", () => {

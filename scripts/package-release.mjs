@@ -33,6 +33,12 @@ const REQUIRED_PROMPT_DOCS = [
   "docs/developer-maintenance.md"
 ];
 
+const REQUIRED_MEDIA_TOOL_PLATFORMS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "win32-x64"
+];
+
 const EXCLUDED_NAMES = new Set([
   ".DS_Store",
   "package-release.mjs"
@@ -126,7 +132,7 @@ async function verifyPackageTree(packageDir) {
     hasLaunchers: pathSet.has("启动作品采集面板.command") && pathSet.has("启动作品采集面板.cmd"),
     hasPanelPortSelector: pathSet.has("scripts/select-panel-port.mjs"),
     hasMediaToolBootstrap: pathSet.has("scripts/ensure-media-tools.mjs"),
-    hasBundledMediaTools: ["darwin-x64", "win32-x64"].every((platform) => (
+    hasBundledMediaTools: REQUIRED_MEDIA_TOOL_PLATFORMS.every((platform) => (
       pathSet.has(`tools/${platform}/${platform === "win32-x64" ? "yt-dlp.exe" : "yt-dlp"}`)
       && pathSet.has(`tools/${platform}/${platform === "win32-x64" ? "ffmpeg.exe" : "ffmpeg"}`)
       && pathSet.has(`tools/${platform}/${platform === "win32-x64" ? "ffprobe.exe" : "ffprobe"}`)

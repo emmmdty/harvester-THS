@@ -404,7 +404,7 @@ async function startCrawl(res, platform, body) {
 
   currentRun = spawn(NODE_BIN, args, {
     cwd: ROOT,
-    env: { ...await effectiveEnv(), FORCE_COLOR: "0", HARVESTER_PROGRESS_LOGS: "1" },
+    env: panelRunEnv(await effectiveEnv()),
     stdio: ["ignore", "pipe", "pipe"]
   });
   currentRun.platform = platform;
@@ -873,7 +873,7 @@ async function startScheduledDailyRun() {
     targetDate
   ], {
     cwd: ROOT,
-    env: { ...await effectiveEnv(), FORCE_COLOR: "0", HARVESTER_PROGRESS_LOGS: "1" },
+    env: panelRunEnv(await effectiveEnv()),
     stdio: ["ignore", "pipe", "pipe"]
   });
   currentRun.platform = PLATFORMS.daily;
@@ -935,6 +935,17 @@ function schedulerPayload() {
 function sendJson(res, payload, status = 200, headers = {}) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
   res.end(JSON.stringify(payload));
+}
+
+function panelRunEnv(env = process.env) {
+  return {
+    ...env,
+    FORCE_COLOR: "0",
+    HARVESTER_PROGRESS_LOGS: "1",
+    CRAWL_BROWSER_HEADLESS: "1",
+    MATERIAL_BROWSER_FALLBACK_HEADLESS: "1",
+    LOGIN_CHECK_HEADLESS: "1"
+  };
 }
 
 function sendText(res, text, status = 200) {

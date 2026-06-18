@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 export function isDocker() {
   return process.env.DOCKER === "1" || existsSync("/.dockerenv");
@@ -16,7 +17,7 @@ export function resolveHeadless() {
 }
 
 export function resolveCrawlerHeadless(env = process.env) {
-  const value = env.CRAWL_BROWSER_HEADLESS ?? env.CRAWL_HEADLESS ?? env.HEADLESS;
+  const value = env.CRAWL_BROWSER_HEADLESS ?? env.CRAWL_HEADLESS;
   if (value !== undefined) {
     return /^(1|true|yes)$/i.test(String(value));
   }
@@ -31,4 +32,24 @@ export function chromiumLaunchOptions() {
   }
 
   return { args };
+}
+
+export function activateChromiumWindow(env = process.env) {
+  if (/^(0|false|no|off)$/iu.test(String(env.LOGIN_WINDOW_ACTIVATE ?? "").trim())) return false;
+  try {
+    if (process.platform === "darwin") {
+      return spawnSync("osascript", ["-e", 'tell application "Chromium" to activate'], {
+        stdio: "ignore"
+      }).status === 0;
+    }
+    if (process.platform === "win32") {
+      const script = "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::AppActivate('Chromium') | Out-Null";
+      return spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
+        stdio: "ignore"
+      }).status === 0;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }

@@ -63,8 +63,13 @@ echo.
 echo ==== 4/6 Check browser package ====
 call npx playwright install chromium
 if errorlevel 1 (
-  echo Chromium installation failed. Please check network and send this window screenshot.
-  goto :fail
+  echo China mirror failed. Trying official Playwright source...
+  set "PLAYWRIGHT_DOWNLOAD_HOST="
+  call npx playwright install chromium
+  if errorlevel 1 (
+    echo Chromium installation failed. Please check network and send this window screenshot.
+    goto :fail
+  )
 )
 
 echo.

@@ -88,7 +88,7 @@ export function classifyBrowserFallbackError(platformId = "", message = "") {
 }
 
 function resolveMaterialFallbackHeadless(env = process.env) {
-  const explicit = env.MATERIAL_BROWSER_FALLBACK_HEADLESS ?? env.MATERIAL_FALLBACK_HEADLESS ?? env.PLAYWRIGHT_HEADLESS;
+  const explicit = env.MATERIAL_BROWSER_FALLBACK_HEADLESS ?? env.MATERIAL_FALLBACK_HEADLESS;
   if (explicit !== undefined) return /^(1|true|yes)$/iu.test(String(explicit));
   return resolveCrawlerHeadless(env);
 }

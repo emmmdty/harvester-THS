@@ -41,6 +41,16 @@ test("scheduled all-channel runs reuse the same login gate as manual all-channel
   assert.match(server, /定时任务已中止/);
 });
 
+test("panel spawned collection stays headless while login windows remain interactive", async () => {
+  const server = await fs.readFile(path.join(ROOT, "src", "server.mjs"), "utf8");
+
+  assert.match(server, /function panelRunEnv\(env = process\.env\)/u);
+  assert.match(server, /env: panelRunEnv\(await effectiveEnv\(\)\)/u);
+  assert.match(server, /CRAWL_BROWSER_HEADLESS: "1"/u);
+  assert.match(server, /MATERIAL_BROWSER_FALLBACK_HEADLESS: "1"/u);
+  assert.match(server, /LOGIN_CHECK_HEADLESS: "1"/u);
+});
+
 test("single daily-platform crawl tabs run the modular daily pipeline", async () => {
   const server = await fs.readFile(path.join(ROOT, "src", "server.mjs"), "utf8");
 

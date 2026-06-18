@@ -3,6 +3,7 @@ import net from "node:net";
 import path from "node:path";
 
 import { validateFeishuConfig } from "./feishu-sheets.mjs";
+import { DEFAULT_PANEL_PORT_START, resolvePanelPortRange } from "../scripts/select-panel-port.mjs";
 
 const PROFILE_DIRS = [".xhs-profile", ".douyin-profile", ".bilibili-profile"];
 
@@ -16,10 +17,7 @@ export async function runProductionCheck({
   checks.push(checkFeishu(env));
   checks.push(await checkProfiles(root));
   checks.push(await checkScheduler(root));
-  checks.push(await checkPort({
-    host: String(env.HOST || "127.0.0.1"),
-    port: Number(env.PORT || 3000)
-  }));
+  checks.push(await checkPanelPortRange({ env, checkPort }));
 
   const failed = checks.filter((check) => check.status === "fail");
   const warnings = checks.filter((check) => check.status === "warn");
@@ -30,6 +28,35 @@ export async function runProductionCheck({
       ? `生产检查未通过：${failed.length} 项失败，${warnings.length} 项提示。`
       : `生产检查通过：0 项失败，${warnings.length} 项提示。`
   };
+}
+
+async function checkPanelPortRange({ env, checkPort }) {
+  const host = String(env.HOST || env.PANEL_HOST || "127.0.0.1");
+  const range = resolveProductionPortRange(env);
+  const failures = [];
+  for (let port = range.start; port <= range.end; port += 1) {
+    const result = await checkPort({ host, port });
+    if (result.status !== "fail") {
+      return check("port", result.status, result.message || `端口 ${port} 可用。`);
+    }
+    failures.push(result.message);
+  }
+  const first = failures[0] || `${range.start}-${range.end} 端口不可用。`;
+  return check("port", "fail", range.start === range.end
+    ? first
+    : `${range.start}-${range.end} 端口都不可用；首次失败：${first}`);
+}
+
+function resolveProductionPortRange(env = process.env) {
+  if (env.PORT !== undefined && String(env.PORT).trim() !== "") {
+    const port = Number(env.PORT);
+    return { start: port, end: port };
+  }
+  try {
+    return resolvePanelPortRange(env);
+  } catch {
+    return { start: DEFAULT_PANEL_PORT_START, end: DEFAULT_PANEL_PORT_START };
+  }
 }
 
 export async function defaultCheckPort({ host, port }) {

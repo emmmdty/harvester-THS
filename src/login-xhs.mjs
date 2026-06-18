@@ -1,6 +1,6 @@
 import path from "node:path";
 import { chromium } from "playwright";
-import { chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
+import { activateChromiumWindow, chromiumLaunchOptions, resolveHeadless } from "./browser-env.mjs";
 
 const ROOT = process.cwd();
 const USER_DATA_DIR = path.join(ROOT, ".xhs-profile");
@@ -21,6 +21,8 @@ async function main() {
 
   const page = context.pages()[0] || await context.newPage();
   await page.goto(XHS_URL, { waitUntil: "domcontentloaded" });
+  await page.bringToFront().catch(() => {});
+  activateChromiumWindow();
   console.log("登录浏览器已打开。登录完成后关闭这个浏览器窗口，再回到面板开始爬取。");
 
   await new Promise((resolve) => context.on("close", resolve));

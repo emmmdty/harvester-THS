@@ -75,9 +75,11 @@ test("double-click launch docs and scripts describe the all-platform panel", asy
 test("Windows double-click launcher avoids UTF-8 batch parsing and narrow port ranges", async () => {
   const cmdBuffer = await fs.readFile(path.join(ROOT, "启动作品采集面板.cmd"));
   const cmdText = cmdBuffer.toString("utf8");
+  const attributes = await fs.readFile(path.join(ROOT, ".gitattributes"), "utf8");
 
   assert.equal(/[^\x00-\x7F]/u.test(cmdText), false, "Windows cmd launcher should stay ASCII-only");
   assert.equal(/(?<!\r)\n/u.test(cmdText), false, "Windows cmd launcher should keep CRLF line endings");
+  assert.match(attributes, /^\*\.cmd whitespace=cr-at-eol$/m);
   assert.match(cmdText, /==== 1\/6 Check Node\.js and npm ====/u);
   assert.match(cmdText, /==== 2\/6 Check runtime packages ====/u);
   assert.match(cmdText, /node scripts\\ensure-media-tools\.mjs/u);
