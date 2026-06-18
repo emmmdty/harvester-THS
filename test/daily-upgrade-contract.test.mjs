@@ -1180,6 +1180,20 @@ test("Douyin note material cache uses visual fallback when yt-dlp does not suppo
   assert.equal(result.manifests[0].assets[0].fileName, "fallback.jpg");
 });
 
+test("Douyin browser material fallback propagates injected headless env", async () => {
+  const root = process.cwd();
+  const cacheSource = await fs.readFile(path.join(root, "src", "materials", "cache.mjs"), "utf8");
+  const assetsSource = await fs.readFile(path.join(root, "src", "douyin-channel-type-classifier", "assets.mjs"), "utf8");
+  const step15Source = await fs.readFile(path.join(root, "src", "step15-douyin-assets.mjs"), "utf8");
+
+  assert.match(cacheSource, /extractDouyinAssetFromPage\(\{\s*root,\s*sourceRow: item,\s*env\s*\}\)/u);
+  assert.match(cacheSource, /captureDouyinPageScreenshots\(\{[\s\S]*\benv,\s*[\s\S]*count:/u);
+  assert.match(assetsSource, /extractDouyinAssetFromPage\(\{ root = process\.cwd\(\), sourceRow, env = process\.env \}/u);
+  assert.match(assetsSource, /headless: resolveMaterialFallbackHeadless\(env\)/u);
+  assert.match(step15Source, /extractDouyinAsset\(\{ root, targetDate, sourceRow, env \}\)/u);
+  assert.match(step15Source, /headless: resolveMaterialFallbackHeadless\(env\)/u);
+});
+
 test("XHS image-note material cache uses browser fallback before yt-dlp", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "harvester-xhs-image-browser-first-"));
   const sourceJsonPath = path.join(root, "output", "xhs_notes_2026-03-09_to_2026-03-09.json");

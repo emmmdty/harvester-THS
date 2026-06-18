@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { activateChromiumWindow, resolveCrawlerHeadless } from "../src/browser-env.mjs";
+import {
+  activateChromiumWindow,
+  resolveCrawlerHeadless,
+  resolveMaterialFallbackHeadless
+} from "../src/browser-env.mjs";
 
 test("daily crawler entrypoints keep the original Playwright browser runtime", async () => {
   const root = process.cwd();
@@ -33,6 +37,15 @@ test("crawler browser sessions default to background mode while allowing explici
   assert.equal(resolveCrawlerHeadless({ HEADLESS: "1" }), true);
 });
 
+test("material browser fallback defaults to background with explicit debug overrides", () => {
+  assert.equal(resolveMaterialFallbackHeadless({}), true);
+  assert.equal(resolveMaterialFallbackHeadless({ MATERIAL_BROWSER_FALLBACK_HEADLESS: "0", PLAYWRIGHT_HEADLESS: "1" }), false);
+  assert.equal(resolveMaterialFallbackHeadless({ MATERIAL_FALLBACK_HEADLESS: "false" }), false);
+  assert.equal(resolveMaterialFallbackHeadless({ PLAYWRIGHT_HEADLESS: "0" }), false);
+  assert.equal(resolveMaterialFallbackHeadless({ PLAYWRIGHT_HEADLESS: "1" }), true);
+  assert.equal(resolveMaterialFallbackHeadless({ CRAWL_BROWSER_HEADLESS: "0" }), false);
+});
+
 test("crawler entrypoints use crawler headless resolver but login entrypoints stay interactive", async () => {
   const root = process.cwd();
   const crawlXhs = await fs.readFile(path.join(root, "src", "crawl-xhs.mjs"), "utf8");
@@ -40,12 +53,26 @@ test("crawler entrypoints use crawler headless resolver but login entrypoints st
   const fallback = await fs.readFile(path.join(root, "src", "materials", "browser-fallback.mjs"), "utf8");
 
   assert.match(crawlXhs, /resolveCrawlerHeadless/u);
-  assert.match(fallback, /resolveCrawlerHeadless/u);
+  assert.match(fallback, /resolveMaterialFallbackHeadless/u);
   assert.doesNotMatch(fallback, /PLAYWRIGHT_HEADLESS/u);
   assert.match(loginXhs, /resolveHeadless/u);
   assert.match(loginXhs, /headless:\s*false/u);
   assert.match(loginXhs, /bringToFront/u);
   assert.match(loginXhs, /activateChromiumWindow/u);
+});
+
+test("douyin material fallback uses material headless policy instead of legacy Playwright flag", async () => {
+  const root = process.cwd();
+  const files = [
+    "src/douyin-channel-type-classifier/assets.mjs",
+    "src/step15-douyin-assets.mjs"
+  ];
+
+  for (const fileName of files) {
+    const source = await fs.readFile(path.join(root, fileName), "utf8");
+    assert.match(source, /resolveMaterialFallbackHeadless/u, fileName);
+    assert.doesNotMatch(source, /PLAYWRIGHT_HEADLESS\s*===\s*"1"/u, fileName);
+  }
 });
 
 test("login window OS activation can be disabled explicitly", () => {

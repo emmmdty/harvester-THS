@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { chromiumLaunchOptions, resolveMaterialFallbackHeadless } from "./browser-env.mjs";
 import { resolveFfmpegCommand } from "./media-tools.mjs";
 
 const DOUYIN_PROFILE_DIR = ".douyin-profile";
@@ -21,7 +22,7 @@ export async function createDouyinAssetBundle({
   let extracted = {};
   let extractError = "";
   try {
-    extracted = await extractDouyinAsset({ root, targetDate, sourceRow });
+    extracted = await extractDouyinAsset({ root, targetDate, sourceRow, env });
   } catch (error) {
     extractError = error.message || String(error);
     extracted = {};
@@ -86,10 +87,11 @@ export async function createDouyinAssetBundle({
   };
 }
 
-export async function extractDouyinAssetFromPage({ root = process.cwd(), sourceRow } = {}) {
+export async function extractDouyinAssetFromPage({ root = process.cwd(), sourceRow, env = process.env } = {}) {
   const { chromium } = await import("playwright");
   const context = await chromium.launchPersistentContext(path.join(root, DOUYIN_PROFILE_DIR), {
-    headless: process.env.PLAYWRIGHT_HEADLESS === "1",
+    ...chromiumLaunchOptions(),
+    headless: resolveMaterialFallbackHeadless(env),
     viewport: { width: 1280, height: 900 }
   });
   const page = await context.newPage();

@@ -944,6 +944,7 @@ function panelRunEnv(env = process.env) {
     HARVESTER_PROGRESS_LOGS: "1",
     CRAWL_BROWSER_HEADLESS: "1",
     MATERIAL_BROWSER_FALLBACK_HEADLESS: "1",
+    PLAYWRIGHT_HEADLESS: "1",
     LOGIN_CHECK_HEADLESS: "1"
   };
 }

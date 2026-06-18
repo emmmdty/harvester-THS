@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { fetchWithTimeout } from "../ai/content-classification.mjs";
+import { chromiumLaunchOptions, resolveMaterialFallbackHeadless } from "../browser-env.mjs";
 import {
   resolveFfmpegCommand,
   resolveFfprobeCommand
@@ -25,11 +26,12 @@ export async function createDouyinChannelTypeAssetBundle({
   extractDouyinAsset = extractDouyinAssetFromPage,
   captureFallbackScreenshots = captureDouyinPageScreenshots,
   fetch = globalThis.fetch,
+  env = process.env
 } = {}) {
   let extracted = {};
   let extractError = "";
   try {
-    extracted = await extractDouyinAsset({ root, targetDate, sourceRow });
+    extracted = await extractDouyinAsset({ root, targetDate, sourceRow, env });
   } catch (error) {
     extractError = error.message || String(error);
     extracted = {};
@@ -47,7 +49,7 @@ export async function createDouyinChannelTypeAssetBundle({
   const downloaded = await downloadExtractedMedia({ assetDir, extracted, fetch });
   const screenshotPaths = downloaded.hasVisualMedia
     ? []
-    : await captureFallbackScreenshots({ root, sourceRow, assetDir }).catch(() => []);
+    : await captureFallbackScreenshots({ root, sourceRow, assetDir, env }).catch(() => []);
   const localArtifacts = await buildChannelTypeMediaArtifacts({
     assetDir,
     videoPath: downloaded.videoPath || extracted.videoPath || "",
@@ -114,10 +116,11 @@ export async function buildChannelTypeMediaArtifacts({ assetDir, videoPath, imag
   };
 }
 
-export async function extractDouyinAssetFromPage({ root = process.cwd(), sourceRow } = {}) {
+export async function extractDouyinAssetFromPage({ root = process.cwd(), sourceRow, env = process.env } = {}) {
   const { chromium } = await import("playwright");
   const context = await chromium.launchPersistentContext(path.join(root, DOUYIN_PROFILE_DIR), {
-    headless: process.env.PLAYWRIGHT_HEADLESS === "1",
+    ...chromiumLaunchOptions(),
+    headless: resolveMaterialFallbackHeadless(env),
     viewport: { width: 1280, height: 900 }
   });
   const page = await context.newPage();
@@ -316,11 +319,12 @@ async function hasVideoStream(videoPath) {
   }
 }
 
-export async function captureDouyinPageScreenshots({ root = process.cwd(), sourceRow = {}, assetDir, count = 6 } = {}) {
+export async function captureDouyinPageScreenshots({ root = process.cwd(), sourceRow = {}, assetDir, count = 6, env = process.env } = {}) {
   if (!sourceRow?.link) return [];
   const { chromium } = await import("playwright");
   const context = await chromium.launchPersistentContext(path.join(root, DOUYIN_PROFILE_DIR), {
-    headless: process.env.PLAYWRIGHT_HEADLESS === "1",
+    ...chromiumLaunchOptions(),
+    headless: resolveMaterialFallbackHeadless(env),
     viewport: { width: 1280, height: 900 }
   });
   const page = await context.newPage();

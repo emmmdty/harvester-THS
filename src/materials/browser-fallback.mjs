@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 
-import { chromiumLaunchOptions, resolveCrawlerHeadless } from "../browser-env.mjs";
+import { chromiumLaunchOptions, resolveMaterialFallbackHeadless } from "../browser-env.mjs";
 import { getPlatformConfig } from "../platform-config.mjs";
 
 const DEFAULT_BROWSER_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -85,12 +85,6 @@ export function classifyBrowserFallbackError(platformId = "", message = "") {
   if (detectBrowserFallbackRisk({ platformId, pageUrl: text, bodyText: text })) return "页面风控/登录失效";
   if (/timeout|Timeout|超时/iu.test(text)) return `浏览器兜底失败：${text}`;
   return text || "浏览器兜底失败";
-}
-
-function resolveMaterialFallbackHeadless(env = process.env) {
-  const explicit = env.MATERIAL_BROWSER_FALLBACK_HEADLESS ?? env.MATERIAL_FALLBACK_HEADLESS;
-  if (explicit !== undefined) return /^(1|true|yes)$/iu.test(String(explicit));
-  return resolveCrawlerHeadless(env);
 }
 
 function detectBrowserFallbackRisk({ platformId = "", pageUrl = "", bodyText = "" } = {}) {

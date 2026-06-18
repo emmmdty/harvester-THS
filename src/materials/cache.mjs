@@ -609,7 +609,7 @@ async function captureMaterialFallback({
       total: 0,
       action: "抖音图文页面媒体提取中"
     });
-    extracted = await extractDouyinAssetFromPage({ root, sourceRow: item });
+    extracted = await extractDouyinAssetFromPage({ root, sourceRow: item, env });
     log(`抖音图文页面媒体提取完成：${item.id || item.link || item.title || "unknown"}，视频 ${(extracted.videoUrls || []).length}，图片 ${(extracted.imageUrls || []).length}`);
   } catch (error) {
     extractError = error.message || String(error);
@@ -623,6 +623,7 @@ async function captureMaterialFallback({
       root,
       sourceRow: item,
       assetDir: itemDir,
+      env,
       count: Number(env.MATERIAL_FALLBACK_SCREENSHOTS || 3)
     }).catch((error) => {
       log(`抖音图文页面截图兜底失败：${item.link}：${error.message || String(error)}`);

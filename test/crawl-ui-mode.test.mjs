@@ -48,6 +48,7 @@ test("panel spawned collection stays headless while login windows remain interac
   assert.match(server, /env: panelRunEnv\(await effectiveEnv\(\)\)/u);
   assert.match(server, /CRAWL_BROWSER_HEADLESS: "1"/u);
   assert.match(server, /MATERIAL_BROWSER_FALLBACK_HEADLESS: "1"/u);
+  assert.match(server, /PLAYWRIGHT_HEADLESS: "1"/u);
   assert.match(server, /LOGIN_CHECK_HEADLESS: "1"/u);
 });
 

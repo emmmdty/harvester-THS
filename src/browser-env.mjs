@@ -24,6 +24,16 @@ export function resolveCrawlerHeadless(env = process.env) {
   return true;
 }
 
+export function resolveMaterialFallbackHeadless(env = process.env) {
+  const value = env.MATERIAL_BROWSER_FALLBACK_HEADLESS
+    ?? env.MATERIAL_FALLBACK_HEADLESS
+    ?? env.PLAYWRIGHT_HEADLESS;
+  if (value !== undefined) {
+    return /^(1|true|yes)$/i.test(String(value));
+  }
+  return resolveCrawlerHeadless(env);
+}
+
 export function chromiumLaunchOptions() {
   const args = [];
 
