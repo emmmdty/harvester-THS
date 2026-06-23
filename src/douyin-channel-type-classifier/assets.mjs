@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { fetchWithTimeout } from "../ai/content-classification.mjs";
 import { chromiumLaunchOptions, resolveMaterialFallbackHeadless } from "../browser-env.mjs";
+import { detectBrowserFallbackRisk } from "../materials/browser-fallback.mjs";
 import {
   resolveFfmpegCommand,
   resolveFfprobeCommand
@@ -334,6 +335,10 @@ export async function captureDouyinPageScreenshots({ root = process.cwd(), sourc
   try {
     await page.goto(sourceRow.link, { waitUntil: "domcontentloaded", timeout: 45_000 });
     await page.waitForTimeout(1500);
+    const bodyText = await page.locator("body").innerText({ timeout: 8_000 }).catch(() => "");
+    if (detectBrowserFallbackRisk({ platformId: "douyin", pageUrl: page.url(), bodyText })) {
+      return [];
+    }
     for (let index = 0; index < count; index += 1) {
       const screenshotPath = path.join(screenshotDir, `${String(index + 1).padStart(3, "0")}.jpg`);
       await page.screenshot({ path: screenshotPath, type: "jpeg", quality: 82, fullPage: false });

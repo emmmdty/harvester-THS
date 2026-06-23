@@ -87,7 +87,11 @@ export function classifyBrowserFallbackError(platformId = "", message = "") {
   return text || "浏览器兜底失败";
 }
 
-function detectBrowserFallbackRisk({ platformId = "", pageUrl = "", bodyText = "" } = {}) {
+export function detectBrowserFallbackRisk({ platformId = "", pageUrl = "", bodyText = "" } = {}) {
+  return browserFallbackRiskReason({ platformId, pageUrl, bodyText });
+}
+
+function browserFallbackRiskReason({ platformId = "", pageUrl = "", bodyText = "" } = {}) {
   const text = `${pageUrl}\n${bodyText}`.slice(0, 20_000);
   if (platformId === "xhs") {
     if (/website-login\/(?:error|captcha)|\/404\?|IP存在风险|安全验证|验证码|滑块|环境异常|访问频繁|请稍后再试|当前笔记暂时无法浏览|页面无法访问|内容不存在|笔记不存在/iu.test(text)) {
@@ -96,6 +100,9 @@ function detectBrowserFallbackRisk({ platformId = "", pageUrl = "", bodyText = "
     if (/登录后可查看|请先登录|扫码登录|密码登录|手机号登录/iu.test(text)) {
       return "页面风控/登录失效";
     }
+  }
+  if (platformId === "douyin" && /你要观看的视频不存在|观看的视频不存在|视频不存在|内容不存在|页面不存在|该视频已删除|作品已删除/iu.test(text)) {
+    return "抖音作品不可访问";
   }
   if (/安全验证|验证码|请先登录|登录后/iu.test(text)) return "页面风控/登录失效";
   return "";

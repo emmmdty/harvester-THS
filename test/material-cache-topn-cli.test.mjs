@@ -8,6 +8,7 @@ import {
   normalizeTopnJobs,
   runCacheTopnCli
 } from "../src/cache-topn-materials.mjs";
+import { detectBrowserFallbackRisk } from "../src/materials/browser-fallback.mjs";
 
 test("package scripts expose TopN material cache command", async () => {
   const pkg = JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -152,4 +153,54 @@ test("runCacheTopnCli reads TopN jobs, groups by platform, and writes normalized
   assert.deepEqual(written.items[0].metadata, { source: "fake" });
   assert.equal(written.items[1].error_message, "登录态失效：请重新登录 B站");
   assert.equal(written.items[2].error_message, "Unsupported platform: 视频号");
+});
+
+test("runCacheTopnCli marks Douyin screenshot-only fallback as failed", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "topn-cache-cli-"));
+  const inputPath = path.join(tmpDir, "jobs.jsonl");
+  const outPath = path.join(tmpDir, "manifest.json");
+  const screenshotPath = path.join(tmpDir, "output/2026-06-09/douyin/7623721481431780662/screenshots/001.jpg");
+  await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+  await fs.writeFile(screenshotPath, "wrong page");
+  await fs.writeFile(inputPath, JSON.stringify({
+    job_id: "douyin-bad-fallback",
+    platform: "抖音",
+    content_id: "7623721481431780662",
+    content_url: "https://www.douyin.com/video/7623721481431780662",
+    period_end: "2026-06-09"
+  }));
+
+  await runCacheTopnCli({
+    argv: ["--input", inputPath, "--out", outPath, "--root", tmpDir],
+    cachePlatformMaterials: async () => ({
+      manifests: [{
+        ok: true,
+        itemDir: path.dirname(path.dirname(screenshotPath)),
+        error: "yt-dlp 下载失败，退出码 1；已使用抖音图文视觉兜底素材。",
+        imagePaths: [screenshotPath],
+        assets: [{ kind: "image", path: screenshotPath }],
+        fallback: {
+          kind: "douyin-note-visual",
+          extractedMedia: false,
+          screenshots: 1
+        }
+      }]
+    })
+  });
+
+  const written = JSON.parse(await fs.readFile(outPath, "utf8"));
+  assert.equal(written.items[0].status, "failed");
+  assert.equal(written.items[0].cover_path, "");
+  assert.match(written.items[0].error_message, /截图兜底未取得真实媒体/u);
+});
+
+test("browser fallback detects Douyin missing-video pages", () => {
+  assert.equal(
+    detectBrowserFallbackRisk({
+      platformId: "douyin",
+      pageUrl: "https://www.douyin.com/video/7626286546770968627",
+      bodyText: "你要观看的视频不存在 去精选页查看更多视频"
+    }),
+    "抖音作品不可访问"
+  );
 });

@@ -150,6 +150,8 @@ function groupSupportedJobs(jobs) {
 }
 
 function normalizeCachedManifestItem({ job, manifest = {} }) {
+  const invalidReason = invalidManifestReason({ job, manifest });
+  const ok = Boolean(manifest.ok) && !invalidReason;
   const screenshots = uniquePaths([
     ...asArray(manifest.imagePaths),
     ...assetPaths(manifest.assets, ["image", "screenshot", "cover", "thumbnail"])
@@ -161,15 +163,15 @@ function normalizeCachedManifestItem({ job, manifest = {} }) {
   const videoPath = manifest.videoPath || firstAssetPath(manifest.assets, ["video"]) || "";
   return {
     job_id: job.job_id,
-    status: manifest.ok ? "succeeded" : "failed",
+    status: ok ? "succeeded" : "failed",
     platform: job.platform,
     asset_dir: manifest.assetDir || manifest.itemDir || manifest.dir || "",
-    cover_path: manifest.coverPath || screenshots[0] || "",
-    video_path: videoPath,
-    screenshots,
-    frames,
+    cover_path: ok ? (manifest.coverPath || screenshots[0] || "") : "",
+    video_path: ok ? videoPath : "",
+    screenshots: ok ? screenshots : [],
+    frames: ok ? frames : [],
     metadata: isPlainObject(manifest.metadata) ? manifest.metadata : {},
-    error_message: manifest.ok ? "" : errorText(manifest)
+    error_message: ok ? "" : (invalidReason || errorText(manifest))
   };
 }
 
@@ -197,6 +199,28 @@ function failedManifestItem(job, errorMessage) {
 
 function errorText(manifest = {}) {
   return String(manifest.error_message || manifest.errorMessage || manifest.error || manifest.stderr || "");
+}
+
+function invalidManifestReason({ job = {}, manifest = {} } = {}) {
+  if (job.platform !== "douyin") return "";
+  const fallback = isPlainObject(manifest.fallback) ? manifest.fallback : {};
+  const fallbackKind = String(fallback.kind || "");
+  const extractedMedia = Boolean(fallback.extractedMedia || fallback.extracted_media);
+  const text = [
+    manifest.error,
+    manifest.error_message,
+    manifest.errorMessage,
+    manifest.fallbackReason,
+    fallback.riskReason,
+    fallback.extractError
+  ].map((value) => String(value || "")).join("\n");
+  if (/视频不存在|观看的视频不存在|内容不存在|页面不存在|404/iu.test(text)) {
+    return "抖音页面不可访问，未取得真实素材。";
+  }
+  if (fallbackKind === "douyin-note-visual" && !extractedMedia && /yt-dlp|下载失败|未获取到素材/iu.test(text)) {
+    return "抖音截图兜底未取得真实媒体，不能作为素材证据。";
+  }
+  return "";
 }
 
 function asArray(value) {
